@@ -13,37 +13,26 @@ CORS(app)
 SHOP_NAME = "gtsimulators-by-global-technologies.myshopify.com"
 ACCESS_TOKEN = os.getenv("SHOPIFY_TOKEN")
 API_VERSION = "2024-01"
-ALERT_EMAIL = "nandobentzen@gmail.com"
+ALERT_EMAIL = "fp@gtsimulators.com"  # Receiver
+SENDER_EMAIL = "nandobentzen@gmail.com"  # Gmail used to send
 ALERT_PASSWORD = os.getenv("PASS")  # Gmail App Password
-ALERT_RECEIVER = "fp@gtsimulators.com"
 
 
-# ✅ Alert function with full debug
+# ✅ Alert function
 def send_alert_email(subject, body):
-    print("🛠️ Attempting to send alert email...", flush=True)
-
-    if not ALERT_PASSWORD:
-        print("❌ No password found in env variable 'PASS'", flush=True)
-    if not ALERT_EMAIL:
-        print("❌ No recipient email set in ALERT_EMAIL", flush=True)
+    msg = EmailMessage()
+    msg.set_content(body)
+    msg["Subject"] = subject
+    msg["From"] = SENDER_EMAIL
+    msg["To"] = ALERT_EMAIL
 
     try:
-        msg = EmailMessage()
-        msg.set_content(body)
-        msg["Subject"] = subject
-        msg["From"] = ALERT_EMAIL
-        msg["To"] = ALERT_RECEIVER
-
-        print("📤 Connecting to Gmail SMTP...", flush=True)
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-            print("🔐 Logging in...", flush=True)
-            smtp.login(ALERT_EMAIL, ALERT_PASSWORD)
-            print("📧 Sending message...", flush=True)
+            smtp.login(SENDER_EMAIL, ALERT_PASSWORD)
             smtp.send_message(msg)
-            print("✅ Alert email sent successfully!", flush=True)
-
+            print("📧 Alert email sent.")
     except Exception as e:
-        print(f"🔥 ERROR SENDING EMAIL: {e}", flush=True)
+        print(f"❌ Failed to send alert email: {e}")
 
 
 # ✅ Discount lookup from tags
@@ -61,8 +50,11 @@ def get_discount_from_tags(product_id):
     for tag in tags:
         match = re.search(r"(\d+(\.\d+)?)%", tag)
         if match:
-            return float(match.group(1))
+            percent = float(match.group(1))
+            print(f"✅ Found discount tag: {tag} => {percent}%", flush=True)
+            return percent
 
+    print("ℹ️ No discount tag found. Defaulting to 0%.", flush=True)
     return 0.0
 
 
@@ -81,9 +73,9 @@ def create_draft_order():
         discount_percent = get_discount_from_tags(product_id)
 
         # 🧠 Debug info
-        print(f"\n---", flush=True)
-        print(f"Product ID: {product_id}", flush=True)
-        print(f"Discount percent (from tag): {discount_percent}%", flush=True)
+        print(f"\n---")
+        print(f"Product ID: {product_id}")
+        print(f"Discount percent (from tag): {discount_percent}%")
 
         discount_amount = round(price * (discount_percent / 100), 2)
         if price - discount_amount < 0:
@@ -114,25 +106,20 @@ def create_draft_order():
     }
 
     url = f"https://{SHOP_NAME}/admin/api/{API_VERSION}/draft_orders.json"
+    response = requests.post(url, headers=headers, json=payload)
 
-    # 🔔 Force failure to test alert email
-    send_alert_email("⚠️ Test Alert Triggered", "This is a test alert from your Flask app.")
-    return jsonify({"error": "Forced test failure"}), 500
-
-    # Uncomment this block to go back to live functionality after test:
-    # response = requests.post(url, headers=headers, json=payload)
-    # if response.status_code == 201:
-    #     draft = response.json()["draft_order"]
-    #     return jsonify({"checkout_url": draft["invoice_url"]})
-    # else:
-    #     send_alert_email(
-    #         "⚠️ Draft Order Failed",
-    #         f"Response: {response.status_code}\nDetails: {response.text}"
-    #     )
-    #     return jsonify({
-    #         "error": "Failed to create draft order",
-    #         "details": response.json()
-    #     }), 500
+    if response.status_code == 201:
+        draft = response.json()["draft_order"]
+        return jsonify({"checkout_url": draft["invoice_url"]})
+    else:
+        send_alert_email(
+            "⚠️ Draft Order Failed",
+            f"Response: {response.status_code}\nDetails: {response.text}"
+        )
+        return jsonify({
+            "error": "Failed to create draft order",
+            "details": response.json()
+        }), 500
 
 
 if __name__ == "__main__":
