@@ -16,10 +16,9 @@ API_VERSION = "2024-01"
 ALERT_EMAIL = "fp@gtsimulators.com"
 ALERT_PASSWORD = os.getenv("PASS")  # Gmail App Password
 
+
 # ✅ Alert function
 def send_alert_email(subject, body):
-    print(f"📨 Preparing to send alert. Password loaded? {'Yes' if ALERT_PASSWORD else 'No'}")
-
     msg = EmailMessage()
     msg.set_content(body)
     msg["Subject"] = subject
@@ -32,7 +31,8 @@ def send_alert_email(subject, body):
             smtp.send_message(msg)
             print("📧 Alert email sent.")
     except Exception as e:
-        print(f"❌ Failed to send alert email: {str(e)}")
+        print(f"❌ Failed to send alert email: {e}")
+
 
 # ✅ Discount lookup from tags
 def get_discount_from_tags(product_id):
@@ -53,6 +53,7 @@ def get_discount_from_tags(product_id):
 
     return 0.0
 
+
 # ✅ Create draft order
 @app.route("/create-draft", methods=["POST"])
 def create_draft_order():
@@ -67,6 +68,7 @@ def create_draft_order():
 
         discount_percent = get_discount_from_tags(product_id)
 
+        # 🧠 Debug info
         print(f"\n---")
         print(f"Product ID: {product_id}")
         print(f"Discount percent (from tag): {discount_percent}%")
@@ -100,25 +102,21 @@ def create_draft_order():
     }
 
     url = f"https://{SHOP_NAME}/admin/api/{API_VERSION}/draft_orders.json"
+    response = requests.post(url, headers=headers, json=payload)
 
-    # 🔔 FORCE ALERT TEST (remove these 2 lines after testing)
-    send_alert_email("⚠️ Test Alert Triggered", "This is a test alert from your Flask app.")
-    return jsonify({"error": "Forced test failure"}), 500
+    if response.status_code == 201:
+        draft = response.json()["draft_order"]
+        return jsonify({"checkout_url": draft["invoice_url"]})
+    else:
+        send_alert_email(
+            "⚠️ Draft Order Failed",
+            f"Response: {response.status_code}\nDetails: {response.text}"
+        )
+        return jsonify({
+            "error": "Failed to create draft order",
+            "details": response.json()
+        }), 500
 
-    # 👇 Normal flow (uncomment this after testing)
-    # response = requests.post(url, headers=headers, json=payload)
-    # if response.status_code == 201:
-    #     draft = response.json()["draft_order"]
-    #     return jsonify({"checkout_url": draft["invoice_url"]})
-    # else:
-    #     send_alert_email(
-    #         "⚠️ Draft Order Failed",
-    #         f"Response: {response.status_code}\nDetails: {response.text}"
-    #     )
-    #     return jsonify({
-    #         "error": "Failed to create draft order",
-    #         "details": response.json()
-    #     }), 500
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
