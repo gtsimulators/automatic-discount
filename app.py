@@ -3,21 +3,40 @@ from flask_cors import CORS
 import requests
 import re
 import os
+import smtplib
+from email.message import EmailMessage
 
 app = Flask(__name__)
 CORS(app)
 
-# ✅ Your actual store settings
+# ✅ Store settings
 SHOP_NAME = "gtsimulators-by-global-technologies.myshopify.com"
 ACCESS_TOKEN = os.getenv("SHOPIFY_TOKEN")
 API_VERSION = "2024-01"
+ALERT_EMAIL = "fp@gtsimulators.com"
+ALERT_PASSWORD = os.getenv("PASS")  # Gmail App Password
 
-# ✅ Helper: Get discount % from product tags like "2%", "5% OFF", etc.
+
+# ✅ Alert function
+def send_alert_email(subject, body):
+    msg = EmailMessage()
+    msg.set_content(body)
+    msg["Subject"] = subject
+    msg["From"] = ALERT_EMAIL
+    msg["To"] = ALERT_EMAIL
+
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+            smtp.login(ALERT_EMAIL, ALERT_PASSWORD)
+            smtp.send_message(msg)
+            print("📧 Alert email sent.")
+    except Exception as e:
+        print(f"❌ Failed to send alert email: {e}")
+
+
+# ✅ Discount lookup from tags
 def get_discount_from_tags(product_id):
-    headers = {
-        "X-Shopify-Access-Token": ACCESS_TOKEN
-    }
-
+    headers = {"X-Shopify-Access-Token": ACCESS_TOKEN}
     url = f"https://{SHOP_NAME}/admin/api/{API_VERSION}/products/{product_id}.json"
     response = requests.get(url, headers=headers)
 
@@ -25,8 +44,7 @@ def get_discount_from_tags(product_id):
         return 0.0
 
     product = response.json().get("product", {})
-    tags_string = product.get("tags", "")
-    tags = [t.strip() for t in tags_string.split(",")]
+    tags = [t.strip() for t in product.get("tags", "").split(",")]
 
     for tag in tags:
         match = re.search(r"(\d+(\.\d+)?)%", tag)
@@ -35,7 +53,8 @@ def get_discount_from_tags(product_id):
 
     return 0.0
 
-# ✅ Route: Create draft order with per-item discounts
+
+# ✅ Create draft order
 @app.route("/create-draft", methods=["POST"])
 def create_draft_order():
     cart_data = request.get_json()
@@ -49,15 +68,14 @@ def create_draft_order():
 
         discount_percent = get_discount_from_tags(product_id)
 
-        # 🧠 Print debugging info
+        # 🧠 Debug info
         print(f"\n---")
         print(f"Product ID: {product_id}")
         print(f"Discount percent (from tag): {discount_percent}%")
 
         discount_amount = round(price * (discount_percent / 100), 2)
-        final_price = price - discount_amount
-        if final_price < 0:
-            final_price = 0.01
+        if price - discount_amount < 0:
+            discount_amount = price - 0.01
 
         line_items.append({
             "variant_id": variant_id,
@@ -90,11 +108,16 @@ def create_draft_order():
         draft = response.json()["draft_order"]
         return jsonify({"checkout_url": draft["invoice_url"]})
     else:
+        send_alert_email(
+            "⚠️ Draft Order Failed",
+            f"Response: {response.status_code}\nDetails: {response.text}"
+        )
         return jsonify({
             "error": "Failed to create draft order",
             "details": response.json()
         }), 500
 
+
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))  # Render provides the correct port via env var
+    port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=True)
