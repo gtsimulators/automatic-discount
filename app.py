@@ -13,8 +13,9 @@ CORS(app)
 SHOP_NAME = "gtsimulators-by-global-technologies.myshopify.com"
 ACCESS_TOKEN = os.getenv("SHOPIFY_TOKEN")
 API_VERSION = "2024-01"
-ALERT_EMAIL = "fp@gtsimulators.com"
+ALERT_EMAIL = "nandobentzen@gmail.com"
 ALERT_PASSWORD = os.getenv("PASS")  # Gmail App Password
+ALERT_RECEIVER = "fp@gtsimulators.com"
 
 
 # ✅ Alert function with full debug
@@ -31,7 +32,7 @@ def send_alert_email(subject, body):
         msg.set_content(body)
         msg["Subject"] = subject
         msg["From"] = ALERT_EMAIL
-        msg["To"] = ALERT_EMAIL
+        msg["To"] = ALERT_RECEIVER
 
         print("📤 Connecting to Gmail SMTP...", flush=True)
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
