@@ -16,14 +16,15 @@ API_VERSION = "2024-01"
 ALERT_EMAIL = "fp@gtsimulators.com"
 ALERT_PASSWORD = os.getenv("PASS")  # Gmail App Password
 
-# ✅ Alert function with debug
+
+# ✅ Alert function with full debug
 def send_alert_email(subject, body):
-    print("🛠️ Attempting to send alert email...")
+    print("🛠️ Attempting to send alert email...", flush=True)
 
     if not ALERT_PASSWORD:
-        print("❌ No password found in env variable 'PASS'")
+        print("❌ No password found in env variable 'PASS'", flush=True)
     if not ALERT_EMAIL:
-        print("❌ No recipient email set in ALERT_EMAIL")
+        print("❌ No recipient email set in ALERT_EMAIL", flush=True)
 
     try:
         msg = EmailMessage()
@@ -32,16 +33,17 @@ def send_alert_email(subject, body):
         msg["From"] = ALERT_EMAIL
         msg["To"] = ALERT_EMAIL
 
-        print("📤 Connecting to Gmail SMTP...")
+        print("📤 Connecting to Gmail SMTP...", flush=True)
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-            print("🔐 Logging in...")
+            print("🔐 Logging in...", flush=True)
             smtp.login(ALERT_EMAIL, ALERT_PASSWORD)
-            print("📧 Sending message...")
+            print("📧 Sending message...", flush=True)
             smtp.send_message(msg)
-            print("✅ Alert email sent successfully!")
+            print("✅ Alert email sent successfully!", flush=True)
 
     except Exception as e:
-        print(f"🔥 ERROR SENDING EMAIL: {e}")
+        print(f"🔥 ERROR SENDING EMAIL: {e}", flush=True)
+
 
 # ✅ Discount lookup from tags
 def get_discount_from_tags(product_id):
@@ -62,56 +64,62 @@ def get_discount_from_tags(product_id):
 
     return 0.0
 
+
 # ✅ Create draft order
 @app.route("/create-draft", methods=["POST"])
 def create_draft_order():
-    # 🔔 Force test alert
-    print("🚨 Calling test alert inside /create-draft")
-    send_alert_email("🔔 Test Alert", "This is a test alert to check email functionality.")
-    return jsonify({"status": "Test email attempt made"}), 500
+    cart_data = request.get_json()
+    line_items = []
 
-    # — Uncomment this part after testing —
-    # cart_data = request.get_json()
-    # line_items = []
-    # for item in cart_data.get("items", []):
-    #     product_id = item["product_id"]
-    #     price = item["price"]
-    #     variant_id = item["variant_id"]
-    #     quantity = item["quantity"]
-    #
-    #     discount_percent = get_discount_from_tags(product_id)
-    #
-    #     discount_amount = round(price * (discount_percent / 100), 2)
-    #     if price - discount_amount < 0:
-    #         discount_amount = price - 0.01
-    #
-    #     line_items.append({
-    #         "variant_id": variant_id,
-    #         "quantity": quantity,
-    #         "applied_discount": {
-    #             "description": "SAVING",
-    #             "value_type": "fixed_amount",
-    #             "value": f"{discount_amount:.2f}",
-    #             "amount": f"{discount_amount:.2f}"
-    #         }
-    #     })
-    #
-    # payload = {
-    #     "draft_order": {
-    #         "line_items": line_items,
-    #         "use_customer_default_address": True,
-    #         "note": "Created via custom discount app"
-    #     }
-    # }
-    #
-    # headers = {
-    #     "Content-Type": "application/json",
-    #     "X-Shopify-Access-Token": ACCESS_TOKEN
-    # }
-    #
-    # url = f"https://{SHOP_NAME}/admin/api/{API_VERSION}/draft_orders.json"
+    for item in cart_data.get("items", []):
+        product_id = item["product_id"]
+        price = item["price"]
+        variant_id = item["variant_id"]
+        quantity = item["quantity"]
+
+        discount_percent = get_discount_from_tags(product_id)
+
+        # 🧠 Debug info
+        print(f"\n---", flush=True)
+        print(f"Product ID: {product_id}", flush=True)
+        print(f"Discount percent (from tag): {discount_percent}%", flush=True)
+
+        discount_amount = round(price * (discount_percent / 100), 2)
+        if price - discount_amount < 0:
+            discount_amount = price - 0.01
+
+        line_items.append({
+            "variant_id": variant_id,
+            "quantity": quantity,
+            "applied_discount": {
+                "description": "SAVING",
+                "value_type": "fixed_amount",
+                "value": f"{discount_amount:.2f}",
+                "amount": f"{discount_amount:.2f}"
+            }
+        })
+
+    payload = {
+        "draft_order": {
+            "line_items": line_items,
+            "use_customer_default_address": True,
+            "note": "Created via custom discount app"
+        }
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "X-Shopify-Access-Token": ACCESS_TOKEN
+    }
+
+    url = f"https://{SHOP_NAME}/admin/api/{API_VERSION}/draft_orders.json"
+
+    # 🔔 Force failure to test alert email
+    send_alert_email("⚠️ Test Alert Triggered", "This is a test alert from your Flask app.")
+    return jsonify({"error": "Forced test failure"}), 500
+
+    # Uncomment this block to go back to live functionality after test:
     # response = requests.post(url, headers=headers, json=payload)
-    #
     # if response.status_code == 201:
     #     draft = response.json()["draft_order"]
     #     return jsonify({"checkout_url": draft["invoice_url"]})
@@ -124,6 +132,7 @@ def create_draft_order():
     #         "error": "Failed to create draft order",
     #         "details": response.json()
     #     }), 500
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
