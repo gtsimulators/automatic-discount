@@ -16,7 +16,6 @@ API_VERSION = "2024-01"
 ALERT_EMAIL = "fp@gtsimulators.com"
 ALERT_PASSWORD = os.getenv("PASS")  # Gmail App Password
 
-
 # ✅ Alert function
 def send_alert_email(subject, body):
     msg = EmailMessage()
@@ -32,7 +31,6 @@ def send_alert_email(subject, body):
             print("📧 Alert email sent.")
     except Exception as e:
         print(f"❌ Failed to send alert email: {e}")
-
 
 # ✅ Discount lookup from tags
 def get_discount_from_tags(product_id):
@@ -52,7 +50,6 @@ def get_discount_from_tags(product_id):
             return float(match.group(1))
 
     return 0.0
-
 
 # ✅ Create draft order
 @app.route("/create-draft", methods=["POST"])
@@ -102,21 +99,25 @@ def create_draft_order():
     }
 
     url = f"https://{SHOP_NAME}/admin/api/{API_VERSION}/draft_orders.json"
-    response = requests.post(url, headers=headers, json=payload)
 
-    if response.status_code == 201:
-        draft = response.json()["draft_order"]
-        return jsonify({"checkout_url": draft["invoice_url"]})
-    else:
-        send_alert_email(
-            "⚠️ Draft Order Failed",
-            f"Response: {response.status_code}\nDetails: {response.text}"
-        )
-        return jsonify({
-            "error": "Failed to create draft order",
-            "details": response.json()
-        }), 500
+    # 🔔 TEST ALERT
+    send_alert_email("⚠️ Test Alert Triggered", "This is a test alert from your Flask app.")
+    return jsonify({"error": "Forced test failure"}), 500
 
+    # If you want to restore functionality after testing, just remove the two lines above and uncomment below:
+    # response = requests.post(url, headers=headers, json=payload)
+    # if response.status_code == 201:
+    #     draft = response.json()["draft_order"]
+    #     return jsonify({"checkout_url": draft["invoice_url"]})
+    # else:
+    #     send_alert_email(
+    #         "⚠️ Draft Order Failed",
+    #         f"Response: {response.status_code}\nDetails: {response.text}"
+    #     )
+    #     return jsonify({
+    #         "error": "Failed to create draft order",
+    #         "details": response.json()
+    #     }), 500
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
