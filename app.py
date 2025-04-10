@@ -69,13 +69,14 @@ def create_draft_order():
         price = item["price"]
         variant_id = item["variant_id"]
         quantity = item["quantity"]
+        product_title = item["title"]
 
         discount_percent = get_discount_from_tags(product_id)
 
         # 🧠 Debug info
-        print(f"\n---")
         print(f"Product ID: {product_id}")
-        print(f"Discount percent (from tag): {discount_percent}%")
+        print(f"Product name: {product_title}")
+        print(f"\n---")
 
         discount_amount = round(price * (discount_percent / 100), 2)
         if price - discount_amount < 0:
