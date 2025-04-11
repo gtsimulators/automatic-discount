@@ -86,7 +86,7 @@ def create_draft_order():
             "variant_id": variant_id,
             "quantity": quantity,
             "applied_discount": {
-                "description": "SAVING",
+                "description": "GT DISCOUNT",
                 "value_type": "fixed_amount",
                 "value": f"{discount_amount:.2f}",
                 "amount": f"{discount_amount:.2f}"
@@ -97,7 +97,7 @@ def create_draft_order():
         "draft_order": {
             "line_items": line_items,
             "use_customer_default_address": True,
-            "note": "Created via custom discount app"
+            "note": ""
         }
     }
 
