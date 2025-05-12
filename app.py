@@ -62,24 +62,28 @@ def get_discount_from_tags(product_id):
     print("ℹ️ No discount tag found. Defaulting to 0%.", flush=True)
     return 0.0
 
-# ─── SKU → variant_id lookup, filtered by exact SKU ─────────────────────────
+# helper: look up a single variant_id by SKU
 def lookup_variant_id(sku: str) -> int | None:
-    url     = f"https://{SHOP_NAME}/admin/api/{API_VERSION}/variants.json"
     headers = {"X-Shopify-Access-Token": ACCESS_TOKEN}
-    resp    = requests.get(url, headers=headers, verify=CA_BUNDLE)
+    # use Shopify’s search parameter to find only the product(s) that have this variant SKU
+    url = (
+      f"https://{SHOP_NAME}"
+      f"/admin/api/{API_VERSION}/products.json"
+      f"?query=variants.sku:{sku}"
+      f"&fields=variants"
+    )
+    resp = requests.get(url, headers=headers, verify=CA_BUNDLE)
     if resp.status_code != 200:
-        print(f"❌ Failed to fetch variants for SKU lookup: {resp.status_code}", flush=True)
         return None
 
-    variants = resp.json().get("variants", [])
-    for v in variants:
-        if v.get("sku", "").strip().lower() == sku.strip().lower():
-            return v["id"]
-
-    print(f"⚠️ No matching variant found for SKU '{sku}'", flush=True)
+    products = resp.json().get("products", [])
+    for prod in products:
+        for var in prod.get("variants", []):
+            if var.get("sku") == sku:
+                return var.get("id")
     return None
 
-# ✅ Create draft order
+# ✅ Create draft order (cart.js flow)
 @app.route("/create-draft", methods=["POST"])
 def create_draft_order():
     cart_data = request.get_json()
@@ -152,23 +156,24 @@ def create_draft_from_method():
 
     line_items = []
     for item in items:
-        sku        = item.get("sku", "")
-        list_price = float(item.get("list", 0))
-        discount   = float(item.get("disc", 0))
-        qty        = int(item.get("qty", 1))
+        sku      = item.get("sku")
+        qty      = int(item.get("qty", 1))
+        discount = float(item.get("disc", 0))
 
-        variant_id = lookup_variant_id(sku)
-        if not variant_id:
+        # look up the real variant_id
+        vid = lookup_variant_id(sku)
+        if not vid:
+            print(f"⚠️ SKU {sku} not found, skipping", flush=True)
             continue
 
         line_items.append({
-            "variant_id": variant_id,
+            "variant_id": vid,
             "quantity":   qty,
             "applied_discount": {
-                "description": "GT Discount",
-                "value_type":  "fixed_amount",
-                "value":       f"{discount:.2f}",
-                "amount":      f"{discount:.2f}"
+                "description": "GT DISCOUNT",
+                "value_type":   "fixed_amount",
+                "value":        f"{discount:.2f}",
+                "amount":       f"{discount:.2f}"
             }
         })
 
