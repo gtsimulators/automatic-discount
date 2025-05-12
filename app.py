@@ -24,7 +24,6 @@ ALERT_EMAIL   = "fp@gtsimulators.com"         # Receiver
 SENDER_EMAIL  = "nandobentzen@gmail.com"      # Gmail used to send
 ALERT_PASSWORD= os.getenv("PASS")             # Gmail App Password
 
-
 # ✅ Alert function
 def send_alert_email(subject, body):
     msg = EmailMessage()
@@ -40,7 +39,6 @@ def send_alert_email(subject, body):
             print("📧 Alert email sent.", flush=True)
     except Exception as e:
         print(f"❌ Failed to send alert email: {e}", flush=True)
-
 
 # ✅ Discount lookup from tags
 def get_discount_from_tags(product_id):
@@ -64,25 +62,22 @@ def get_discount_from_tags(product_id):
     print("ℹ️ No discount tag found. Defaulting to 0%.", flush=True)
     return 0.0
 
-
-# ─── New helper to look up variant_id from SKU ────────────────────────────────
+# ─── SKU → variant_id lookup, filtered by exact SKU ─────────────────────────
 def lookup_variant_id(sku: str) -> int | None:
-    """
-    Returns the first matching Shopify variant_id for this SKU, or None.
-    """
     url     = f"https://{SHOP_NAME}/admin/api/{API_VERSION}/variants.json"
     headers = {"X-Shopify-Access-Token": ACCESS_TOKEN}
-    params  = {"sku": sku}
-    resp    = requests.get(url, headers=headers, params=params, verify=CA_BUNDLE)
+    resp    = requests.get(url, headers=headers, verify=CA_BUNDLE)
     if resp.status_code != 200:
-        print(f"❌ SKU lookup failed ({sku}): {resp.status_code}", flush=True)
+        print(f"❌ Failed to fetch variants for SKU lookup: {resp.status_code}", flush=True)
         return None
-    variants = resp.json().get("variants", [])
-    if not variants:
-        print(f"⚠️ No variant for SKU {sku}", flush=True)
-        return None
-    return variants[0]["id"]
 
+    variants = resp.json().get("variants", [])
+    for v in variants:
+        if v.get("sku", "").strip().lower() == sku.strip().lower():
+            return v["id"]
+
+    print(f"⚠️ No matching variant found for SKU '{sku}'", flush=True)
+    return None
 
 # ✅ Create draft order
 @app.route("/create-draft", methods=["POST"])
@@ -147,7 +142,6 @@ def create_draft_order():
             "details": response.json()
         }), 500
 
-
 # ✅ Create draft order from Method (SKU, list, disc)
 @app.route("/create-draft-from-method", methods=["POST"])
 def create_draft_from_method():
@@ -158,14 +152,13 @@ def create_draft_from_method():
 
     line_items = []
     for item in items:
-        sku        = item.get("sku", "").strip()
+        sku        = item.get("sku", "")
         list_price = float(item.get("list", 0))
         discount   = float(item.get("disc", 0))
         qty        = int(item.get("qty", 1))
 
         variant_id = lookup_variant_id(sku)
         if not variant_id:
-            # skip SKUs we can't resolve
             continue
 
         line_items.append({
@@ -207,12 +200,10 @@ def create_draft_from_method():
             "details": response.text
         }), 500
 
-
 # ✅ Ping endpoint for availability check
 @app.route("/ping", methods=["GET"])
 def ping():
     return "pong", 200
-
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
