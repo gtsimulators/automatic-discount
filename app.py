@@ -65,23 +65,19 @@ def get_discount_from_tags(product_id):
 # helper: look up a single variant_id by SKU
 def lookup_variant_id(sku: str) -> int | None:
     headers = {"X-Shopify-Access-Token": ACCESS_TOKEN}
-    # use Shopify’s search parameter to find only the product(s) that have this variant SKU
-    url = (
-      f"https://{SHOP_NAME}"
-      f"/admin/api/{API_VERSION}/products.json"
-      f"?query=variants.sku:{sku}"
-      f"&fields=variants"
-    )
+    # Shopify Admin: list variants by SKU
+    url = f"https://{SHOP_NAME}/admin/api/{API_VERSION}/variants.json?sku={sku}"
     resp = requests.get(url, headers=headers, verify=CA_BUNDLE)
     if resp.status_code != 200:
+        print(f"⚠️ Variant lookup failed for SKU {sku}: {resp.status_code}", flush=True)
         return None
 
-    products = resp.json().get("products", [])
-    for prod in products:
-        for var in prod.get("variants", []):
-            if var.get("sku") == sku:
-                return var.get("id")
-    return None
+    variants = resp.json().get("variants", [])
+    if not variants:
+        return None
+    # return the first matching variant ID
+    return variants[0].get("id")
+
 
 # ✅ Create draft order (cart.js flow)
 @app.route("/create-draft", methods=["POST"])
