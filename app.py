@@ -123,6 +123,59 @@ def create_draft_order():
         }), 500
 
 
+# ✅ Create draft order from Method (SKU, list, disc)
+@app.route("/create-draft-from-method", methods=["POST"])
+def create_draft_from_method():
+    data = request.get_json()
+    items = data.get("product_list", [])
+
+    if not items:
+        return jsonify({ "error": "No items received" }), 400
+
+    line_items = []
+    for item in items:
+        sku = item.get("sku")
+        list_price = float(item.get("list", 0))
+        discount = float(item.get("disc", 0))
+
+        line_items.append({
+            "title": sku,
+            "price": list_price,
+            "quantity": 1,
+            "applied_discount": {
+                "description": "GT Discount",
+                "value_type": "fixed_amount",
+                "value": f"{discount:.2f}",
+                "amount": f"{discount:.2f}"
+            }
+        })
+
+    payload = {
+        "draft_order": {
+            "line_items": line_items,
+            "use_customer_default_address": True
+        }
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "X-Shopify-Access-Token": ACCESS_TOKEN
+    }
+
+    url = f"https://{SHOP_NAME}/admin/api/{API_VERSION}/draft_orders.json"
+    response = requests.post(url, headers=headers, json=payload)
+
+    if response.status_code == 201:
+        draft = response.json()["draft_order"]
+        return jsonify({ "checkout_url": draft["invoice_url"] })
+    else:
+        send_alert_email("⚠️ Method Draft Failed", response.text)
+        return jsonify({
+            "error": "Failed to create draft",
+            "details": response.text
+        }), 500
+
+
 # ✅ Ping endpoint for availability check
 @app.route("/ping", methods=["GET"])
 def ping():
