@@ -43,7 +43,7 @@ def send_alert_email(subject, body):
 def get_discount_from_tags(product_id):
     headers = {"X-Shopify-Access-Token": ACCESS_TOKEN}
     url = f"https://{SHOP_NAME}/admin/api/{API_VERSION}/products/{product_id}.json"
-    response = requests.get(url, headers=headers)
+    response = requests.get(url, headers=headers, verify=False)
 
     if response.status_code != 200:
         return 0.0
