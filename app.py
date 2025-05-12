@@ -107,7 +107,7 @@ def create_draft_order():
     }
 
     url = f"https://{SHOP_NAME}/admin/api/{API_VERSION}/draft_orders.json"
-    response = requests.post(url, headers=headers, json=payload)
+    response = requests.post(url, headers=headers, json=payload, verify=certifi.where())
 
     if response.status_code == 201:
         draft = response.json()["draft_order"]
@@ -163,7 +163,7 @@ def create_draft_from_method():
     }
 
     url = f"https://{SHOP_NAME}/admin/api/{API_VERSION}/draft_orders.json"
-    response = requests.post(url, headers=headers, json=payload)
+    response = requests.post(url, headers=headers, json=payload, verify=certifi.where())
 
     if response.status_code == 201:
         draft = response.json()["draft_order"]
