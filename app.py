@@ -4,6 +4,7 @@ import requests
 import re
 import os
 import smtplib
+import certifi
 from email.message import EmailMessage
 
 app = Flask(__name__)
