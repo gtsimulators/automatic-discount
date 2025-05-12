@@ -11,3 +11,6 @@ services:
         sync: false
       - key: PASS
         sync: false
+      - key: REQUESTS_CA_BUNDLE
+        value: /etc/ssl/certs/ca-certificates.crt
+
