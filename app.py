@@ -1,8 +1,12 @@
+import certifi
+import os
+os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
+
+
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
 import re
-import os
 import smtplib
 from email.message import EmailMessage
 
