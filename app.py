@@ -84,14 +84,13 @@ def lookup_variant_id(sku: str) -> int | None:
     if node.get("sku", "").upper() != sku.upper():
         return None
 
-    # Extract numeric ID from the gid string
     gid = node["id"]  # ex: "gid://shopify/ProductVariant/1234567890"
     return int(gid.rsplit("/", 1)[-1])
 
 # ✅ Create draft order (cart.js flow) — unchanged
 @app.route("/create-draft", methods=["POST"])
 def create_draft_order():
-    cart_data = request.get_json()
+    cart_data  = request.get_json()
     line_items = []
     for item in cart_data.get("items", []):
         pid      = item["product_id"]
@@ -100,7 +99,6 @@ def create_draft_order():
         qty      = item["quantity"]
         discount = get_discount_from_tags(pid)
 
-        # calculate the dollar amount of the discount
         discount_amount = round(price * discount / 100, 2)
         if price - discount_amount < 0:
             discount_amount = price - 0.01
@@ -117,9 +115,9 @@ def create_draft_order():
         })
 
     payload = {"draft_order": {
-        "line_items":                     line_items,
-        "use_customer_default_address":  True,
-        "note":                          ""
+        "line_items":                    line_items,
+        "use_customer_default_address": True,
+        "note":                         ""
     }}
     headers = {
         "Content-Type":           "application/json",
@@ -147,7 +145,7 @@ def create_draft_from_method():
 
     line_items = []
     for it in items:
-        sku  = it.get("sku", "").strip()
+        sku  = it.get("sku","").strip()
         qty  = int(it.get("qty", 1))
         disc = float(it.get("disc", 0))
 
@@ -156,10 +154,11 @@ def create_draft_from_method():
             print(f"⚠️ SKU {sku} not found, skipping", flush=True)
             continue
 
-        # Use applied_discount so Shopify calculates final = list_price - discount_amount
+        # ——— Here is the ONE ADDITION: include "price": your list price ———
         line_items.append({
             "variant_id": vid,
             "quantity":   qty,
+            "price":      float(it.get("list", 0)),        # ← override list price
             "applied_discount": {
                 "description": "GT DISCOUNT",
                 "value_type":  "fixed_amount",
@@ -191,7 +190,7 @@ def create_draft_from_method():
     send_alert_email("⚠️ Method Draft Failed", resp.text)
     return jsonify({"error": "Failed to create draft", "details": resp.text}), 500
 
-# ✅ Ping endpoint for availability check
+# ✅ Ping endpoint
 @app.route("/ping", methods=["GET"])
 def ping():
     return "pong", 200
