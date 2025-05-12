@@ -17,12 +17,12 @@ app = Flask(__name__)
 CORS(app)
 
 # ✅ Store settings
-SHOP_NAME     = "gtsimulators-by-global-technologies.myshopify.com"
-ACCESS_TOKEN  = os.getenv("SHOPIFY_TOKEN")
-API_VERSION   = "2024-01"
-ALERT_EMAIL   = "fp@gtsimulators.com"         # Receiver
-SENDER_EMAIL  = "nandobentzen@gmail.com"      # Gmail used to send
-ALERT_PASSWORD= os.getenv("PASS")             # Gmail App Password
+SHOP_NAME      = "gtsimulators-by-global-technologies.myshopify.com"
+ACCESS_TOKEN   = os.getenv("SHOPIFY_TOKEN")
+API_VERSION    = "2024-01"
+ALERT_EMAIL    = "fp@gtsimulators.com"         # Receiver
+SENDER_EMAIL   = "nandobentzen@gmail.com"      # Gmail used to send
+ALERT_PASSWORD = os.getenv("PASS")             # Gmail App Password
 
 # ✅ Alert function
 def send_alert_email(subject, body):
@@ -40,11 +40,11 @@ def send_alert_email(subject, body):
     except Exception as e:
         print(f"❌ Failed to send alert email: {e}", flush=True)
 
-# ✅ Discount lookup from tags
+# ✅ Discount lookup from tags (unchanged)
 def get_discount_from_tags(product_id):
-    headers = {"X-Shopify-Access-Token": ACCESS_TOKEN}
-    url     = f"https://{SHOP_NAME}/admin/api/{API_VERSION}/products/{product_id}.json"
-    response= requests.get(url, headers=headers, verify=CA_BUNDLE)
+    headers  = {"X-Shopify-Access-Token": ACCESS_TOKEN}
+    url      = f"https://{SHOP_NAME}/admin/api/{API_VERSION}/products/{product_id}.json"
+    response = requests.get(url, headers=headers, verify=CA_BUNDLE)
 
     if response.status_code != 200:
         return 0.0
@@ -62,12 +62,12 @@ def get_discount_from_tags(product_id):
     print("ℹ️ No discount tag found. Defaulting to 0%.", flush=True)
     return 0.0
 
+# ————————————————————————————————————————————————————————
 # helper: look up a single variant_id by SKU
 def lookup_variant_id(sku: str) -> int | None:
     headers = {"X-Shopify-Access-Token": ACCESS_TOKEN}
-    # Shopify Admin: list variants by SKU
-    url = f"https://{SHOP_NAME}/admin/api/{API_VERSION}/variants.json?sku={sku}"
-    resp = requests.get(url, headers=headers, verify=CA_BUNDLE)
+    url     = f"https://{SHOP_NAME}/admin/api/{API_VERSION}/variants.json?sku={sku}"
+    resp    = requests.get(url, headers=headers, verify=CA_BUNDLE)
     if resp.status_code != 200:
         print(f"⚠️ Variant lookup failed for SKU {sku}: {resp.status_code}", flush=True)
         return None
@@ -75,11 +75,10 @@ def lookup_variant_id(sku: str) -> int | None:
     variants = resp.json().get("variants", [])
     if not variants:
         return None
-    # return the first matching variant ID
     return variants[0].get("id")
+# ————————————————————————————————————————————————————————
 
-
-# ✅ Create draft order (cart.js flow)
+# ✅ Create draft order (cart.js flow) — unchanged
 @app.route("/create-draft", methods=["POST"])
 def create_draft_order():
     cart_data = request.get_json()
@@ -104,28 +103,27 @@ def create_draft_order():
 
         line_items.append({
             "variant_id": variant_id,
-            "quantity": quantity,
+            "quantity":   quantity,
             "applied_discount": {
                 "description": "GT DISCOUNT",
-                "value_type":   "fixed_amount",
-                "value":        f"{discount_amount:.2f}",
-                "amount":       f"{discount_amount:.2f}"
+                "value_type":  "fixed_amount",
+                "value":       f"{discount_amount:.2f}",
+                "amount":      f"{discount_amount:.2f}"
             }
         })
 
     payload = {
         "draft_order": {
-            "line_items": line_items,
-            "use_customer_default_address": True,
-            "note": ""
+            "line_items":                     line_items,
+            "use_customer_default_address":  True,
+            "note":                          ""
         }
     }
 
-    headers = {
-        "Content-Type": "application/json",
-        "X-Shopify-Access-Token": ACCESS_TOKEN
+    headers  = {
+        "Content-Type":            "application/json",
+        "X-Shopify-Access-Token":  ACCESS_TOKEN
     }
-
     url      = f"https://{SHOP_NAME}/admin/api/{API_VERSION}/draft_orders.json"
     response = requests.post(url, headers=headers, json=payload, verify=CA_BUNDLE)
 
@@ -156,20 +154,21 @@ def create_draft_from_method():
         qty      = int(item.get("qty", 1))
         discount = float(item.get("disc", 0))
 
-        # look up the real variant_id
+        # — LOOK UP THE REAL VARIANT ID UNDER THE HOOD —
         vid = lookup_variant_id(sku)
         if not vid:
             print(f"⚠️ SKU {sku} not found, skipping", flush=True)
             continue
 
+        # build the draft line item by variant_id, not title/price
         line_items.append({
-            "variant_id": vid,
-            "quantity":   qty,
+            "variant_id":       vid,
+            "quantity":         qty,
             "applied_discount": {
                 "description": "GT DISCOUNT",
-                "value_type":   "fixed_amount",
-                "value":        f"{discount:.2f}",
-                "amount":       f"{discount:.2f}"
+                "value_type":  "fixed_amount",
+                "value":       f"{discount:.2f}",
+                "amount":      f"{discount:.2f}"
             }
         })
 
@@ -178,16 +177,15 @@ def create_draft_from_method():
 
     payload = {
         "draft_order": {
-            "line_items": line_items,
+            "line_items":                    line_items,
             "use_customer_default_address": True
         }
     }
 
-    headers = {
-        "Content-Type": "application/json",
-        "X-Shopify-Access-Token": ACCESS_TOKEN
+    headers  = {
+        "Content-Type":            "application/json",
+        "X-Shopify-Access-Token":  ACCESS_TOKEN
     }
-
     url      = f"https://{SHOP_NAME}/admin/api/{API_VERSION}/draft_orders.json"
     response = requests.post(url, headers=headers, json=payload, verify=CA_BUNDLE)
 
