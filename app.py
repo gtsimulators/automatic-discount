@@ -63,30 +63,25 @@ def get_discount_from_tags(product_id):
     return 0.0
 
 # ————————————————————————————————————————————————————————
-# helper: look up a single variant_id by SKU
+# helper: look up a single variant_id by SKU (UPDATED)
 def lookup_variant_id(sku: str) -> int | None:
     headers = {"X-Shopify-Access-Token": ACCESS_TOKEN}
-    params = {
-        "query":    f"variants.sku:{sku}",
-        "fields":   "variants",
-        "limit":    1
-    }
+    # CALL THE VARIANTS ENDPOINT DIRECTLY
     resp = requests.get(
-        f"https://{SHOP_NAME}/admin/api/{API_VERSION}/products.json",
+        f"https://{SHOP_NAME}/admin/api/{API_VERSION}/variants.json",
         headers=headers,
-        params=params,
+        params={"sku": sku},
         verify=CA_BUNDLE
     )
     if resp.status_code != 200:
         print(f"⚠️ Variant lookup failed for SKU {sku}: {resp.status_code}", flush=True)
         return None
 
-    products = resp.json().get("products", [])
-    if not products:
+    variants = resp.json().get("variants", [])
+    if not variants:
         return None
 
-    variants = products[0].get("variants", [])
-    return variants[0].get("id") if variants else None
+    return variants[0].get("id")
 
 # ————————————————————————————————————————————————————————
 
@@ -114,8 +109,8 @@ def create_draft_order():
             discount_amount = price - 0.01
 
         line_items.append({
-            "variant_id": variant_id,
-            "quantity":   quantity,
+            "variant_id":       variant_id,
+            "quantity":         quantity,
             "applied_discount": {
                 "description": "GT DISCOUNT",
                 "value_type":  "fixed_amount",
@@ -126,15 +121,15 @@ def create_draft_order():
 
     payload = {
         "draft_order": {
-            "line_items":                     line_items,
-            "use_customer_default_address":  True,
-            "note":                          ""
+            "line_items":                    line_items,
+            "use_customer_default_address": True,
+            "note":                         ""
         }
     }
 
     headers  = {
-        "Content-Type":            "application/json",
-        "X-Shopify-Access-Token":  ACCESS_TOKEN
+        "Content-Type":           "application/json",
+        "X-Shopify-Access-Token": ACCESS_TOKEN
     }
     url      = f"https://{SHOP_NAME}/admin/api/{API_VERSION}/draft_orders.json"
     response = requests.post(url, headers=headers, json=payload, verify=CA_BUNDLE)
@@ -152,7 +147,7 @@ def create_draft_order():
             "details": response.json()
         }), 500
 
-# ✅ Create draft order from Method (SKU, list, disc)
+# ✅ Create draft order from Method (SKU, list, disc) — PRICE ADDED
 @app.route("/create-draft-from-method", methods=["POST"])
 def create_draft_from_method():
     data  = request.get_json()
@@ -164,18 +159,20 @@ def create_draft_from_method():
     for item in items:
         sku      = item.get("sku")
         qty      = int(item.get("qty", 1))
+        list_pr  = float(item.get("list", 0))
         discount = float(item.get("disc", 0))
 
-        # — LOOK UP THE REAL VARIANT ID UNDER THE HOOD —
+        # — LOOK UP THE REAL VARIANT ID —
         vid = lookup_variant_id(sku)
         if not vid:
             print(f"⚠️ SKU {sku} not found, skipping", flush=True)
             continue
 
-        # build the draft line item by variant_id, not title/price
+        # **INCLUDE** "price" so Shopify uses your list price
         line_items.append({
             "variant_id":       vid,
             "quantity":         qty,
+            "price":            f"{list_pr:.2f}",
             "applied_discount": {
                 "description": "GT DISCOUNT",
                 "value_type":  "fixed_amount",
@@ -195,8 +192,8 @@ def create_draft_from_method():
     }
 
     headers  = {
-        "Content-Type":            "application/json",
-        "X-Shopify-Access-Token":  ACCESS_TOKEN
+        "Content-Type":           "application/json",
+        "X-Shopify-Access-Token": ACCESS_TOKEN
     }
     url      = f"https://{SHOP_NAME}/admin/api/{API_VERSION}/draft_orders.json"
     response = requests.post(url, headers=headers, json=payload, verify=CA_BUNDLE)
