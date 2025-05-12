@@ -6,3 +6,8 @@ services:
     startCommand: "python app.py"
     plan: free
     autoDeploy: true
+    envVars:
+      - key: SHOPIFY_TOKEN
+        sync: false
+      - key: PASS
+        sync: false
