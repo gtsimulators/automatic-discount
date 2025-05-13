@@ -155,7 +155,7 @@ def create_draft_from_method():
         qty  = int(it.get("qty",1))
         disc = float(it.get("disc","0").replace(",",""))
 
-        if sku.upper() == "S&H - QUOTE" and quote_number:
+        if sku.upper().startswith("S&H") and quote_number:
             shipping_line = {
                 "title":  f"QUOTE # {quote_number}",
                 "custom": True,
