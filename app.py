@@ -22,6 +22,7 @@ ALERT_EMAIL    = "fp@gtsimulators.com"
 SENDER_EMAIL   = "nandobentzen@gmail.com"
 ALERT_PASSWORD = os.getenv("PASS")
 
+
 def send_alert_email(subject, body):
     msg = EmailMessage()
     msg.set_content(body)
@@ -35,6 +36,7 @@ def send_alert_email(subject, body):
     except Exception as e:
         print(f"❌ Failed to send alert email: {e}", flush=True)
 
+
 def get_discount_from_tags(product_id):
     headers = {"X-Shopify-Access-Token": ACCESS_TOKEN}
     url     = f"https://{SHOP_NAME}/admin/api/{API_VERSION}/products/{product_id}.json"
@@ -47,6 +49,7 @@ def get_discount_from_tags(product_id):
         if m:
             return float(m.group(1))
     return 0.0
+
 
 # — fetch full variant info via GraphQL — returns dict with id and price
 def fetch_variant_info(sku: str):
@@ -88,20 +91,64 @@ def fetch_variant_info(sku: str):
         "price": float(node["price"])
     }
 
+
+@app.route("/create-draft", methods=["POST"])
+def create_draft_order():
+    items = request.get_json().get("items", [])
+    line_items = []
+    for i in items:
+        pid   = i["product_id"]
+        price = float(i["price"])
+        vid   = i["variant_id"]
+        qty   = i["quantity"]
+        pct   = get_discount_from_tags(pid)
+        amt   = round(price * pct/100, 2)
+        if price - amt < 0:
+            amt = price - 0.01
+        line_items.append({
+            "variant_id": vid,
+            "quantity":   qty,
+            "applied_discount": {
+                "description": "GT DISCOUNT",
+                "value_type":  "fixed_amount",
+                "value":       f"{amt:.2f}",
+                "amount":      f"{amt:.2f}"
+            }
+        })
+
+    payload = {"draft_order":{
+        "line_items":                    line_items,
+        "use_customer_default_address": True,
+        "note":                          ""
+    }}
+    headers = {
+        "Content-Type":           "application/json",
+        "X-Shopify-Access-Token": ACCESS_TOKEN
+    }
+    resp = requests.post(
+        f"https://{SHOP_NAME}/admin/api/{API_VERSION}/draft_orders.json",
+        headers=headers, json=payload, verify=CA_BUNDLE
+    )
+    if resp.status_code == 201:
+        return jsonify({"checkout_url": resp.json()["draft_order"]["invoice_url"]})
+    send_alert_email("⚠️ Draft Order Failed", f"{resp.status_code} {resp.text}")
+    return jsonify({"error":"Failed","details":resp.text}), 500
+
+
 @app.route("/create-draft-from-method", methods=["POST"])
 def create_draft_from_method():
-    data        = request.get_json()
-    items       = data.get("product_list", [])
-    quote_info  = data.get("quote_info", [])
+    data       = request.get_json()
+    items      = data.get("product_list", [])
+    quote_info = data.get("quote_info", [])
     if not items:
         return jsonify({"error":"No items received"}), 400
 
-    # extract quote number
+    # pull quote_number (if any)
     quote_number = None
     if quote_info and isinstance(quote_info, list):
         quote_number = quote_info[0].get("quote_number")
 
-    line_items    = []
+    line_items   = []
     shipping_line = None
 
     for it in items:
@@ -110,11 +157,12 @@ def create_draft_from_method():
         disc = float(it.get("disc","0").replace(",",""))
 
         if sku.upper() == "S&H - QUOTE":
+            # build shipping_line instead
             if quote_number:
                 shipping_line = {
-                    "title":  f"QUOTE # {quote_number}",
+                    "title": f"QUOTE # {quote_number}",
                     "custom": True,
-                    "price":  f"{disc:.2f}"
+                    "price": f"{disc:.2f}"
                 }
             continue
 
@@ -151,25 +199,25 @@ def create_draft_from_method():
         draft["shipping_line"] = shipping_line
 
     payload = {"draft_order": draft}
+
     headers = {
         "Content-Type":           "application/json",
         "X-Shopify-Access-Token": ACCESS_TOKEN
     }
-
     resp = requests.post(
         f"https://{SHOP_NAME}/admin/api/{API_VERSION}/draft_orders.json",
         headers=headers, json=payload, verify=CA_BUNDLE
     )
     if resp.status_code == 201:
-        # return the invoice_url so Method can redirect
-        inv = resp.json()["draft_order"]["invoice_url"]
-        return jsonify({"checkout_url": inv})
+        return jsonify({"checkout_url": resp.json()["draft_order"]["invoice_url"]})
     send_alert_email("⚠️ Method Draft Failed", resp.text)
     return jsonify({"error":"Failed","details":resp.text}), 500
+
 
 @app.route("/ping", methods=["GET"])
 def ping():
     return "pong", 200
+
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
