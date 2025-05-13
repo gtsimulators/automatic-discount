@@ -126,9 +126,10 @@ def create_draft_order():
         headers=headers, json=payload, verify=CA_BUNDLE
     )
 
-    if resp.status_code == 201:
-        invoice_url = resp.json()["draft_order"]["invoice_url"]
-        return jsonify({"checkout_url": invoice_url}), 200
+    # ←— here we're accepting 200 or 201 as success
+    body = resp.json()
+    if resp.status_code in (200, 201) and "draft_order" in body:
+        return jsonify({"checkout_url": body["draft_order"]["invoice_url"]}), 200
 
     send_alert_email("⚠️ Draft Order Failed", f"{resp.status_code} {resp.text}")
     return jsonify({"error":"Failed","details":resp.text}), 500
@@ -205,9 +206,10 @@ def create_draft_from_method():
         headers=headers, json=payload, verify=CA_BUNDLE
     )
 
-    # ←— **only this block changed** —→
-    if resp.status_code in (200, 201) and "draft_order" in resp.json():
-        return jsonify({"checkout_url": resp.json()["draft_order"]["invoice_url"]}), 200
+    body = resp.json()
+    # ←— same change here
+    if resp.status_code in (200, 201) and "draft_order" in body:
+        return jsonify({"checkout_url": body["draft_order"]["invoice_url"]}), 200
 
     send_alert_email("⚠️ Method Draft Failed", f"{resp.status_code} {resp.text}")
     return jsonify({"error":"Failed","details":resp.text}), 500
