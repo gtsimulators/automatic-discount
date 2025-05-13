@@ -22,6 +22,7 @@ ALERT_EMAIL    = "fp@gtsimulators.com"
 SENDER_EMAIL   = "nandobentzen@gmail.com"
 ALERT_PASSWORD = os.getenv("PASS")
 
+
 def send_alert_email(subject, body):
     msg = EmailMessage()
     msg.set_content(body)
@@ -35,6 +36,7 @@ def send_alert_email(subject, body):
     except Exception as e:
         print(f"❌ Failed to send alert email: {e}", flush=True)
 
+
 def get_discount_from_tags(product_id):
     headers = {"X-Shopify-Access-Token": ACCESS_TOKEN}
     url     = f"https://{SHOP_NAME}/admin/api/{API_VERSION}/products/{product_id}.json"
@@ -47,6 +49,7 @@ def get_discount_from_tags(product_id):
         if m:
             return float(m.group(1))
     return 0.0
+
 
 # — fetch full variant info via GraphQL — returns dict with id and price
 def fetch_variant_info(sku: str):
@@ -87,6 +90,7 @@ def fetch_variant_info(sku: str):
         "id":    vid,
         "price": float(node["price"])
     }
+
 
 @app.route("/create-draft", methods=["POST"])
 def create_draft_order():
@@ -130,33 +134,51 @@ def create_draft_order():
     send_alert_email("⚠️ Draft Order Failed", f"{resp.status_code} {resp.text}")
     return jsonify({"error":"Failed","details":resp.text}), 500
 
+
 @app.route("/create-draft-from-method", methods=["POST"])
 def create_draft_from_method():
-    data  = request.get_json()
-    items = data.get("product_list", [])
+    data       = request.get_json()
+    items      = data.get("product_list", [])
+    quote_info = data.get("quote_info", [])
     if not items:
         return jsonify({"error":"No items received"}), 400
 
-    line_items = []
+    # pull quote_number (if any)
+    quote_number = None
+    if quote_info and isinstance(quote_info, list):
+        quote_number = quote_info[0].get("quote_number")
+
+    line_items   = []
+    shipping_line = None
+
     for it in items:
         sku  = it.get("sku","").strip()
         qty  = int(it.get("qty",1))
         disc = float(it.get("disc","0").replace(",",""))
+
+        if sku.upper() == "S&H - QUOTE":
+            # build shipping_line instead
+            if quote_number:
+                shipping_line = {
+                    "title": f"QUOTE # {quote_number}",
+                    "price": f"{disc:.2f}"
+                }
+            continue
+
         info = fetch_variant_info(sku)
         if not info:
             print(f"⚠️ SKU {sku} not found, skipping", flush=True)
             continue
 
-        # ALWAYS use Shopify price as base
-        base_price       = info["price"]
-        discount_amount  = round(base_price - disc, 2)
+        base_price      = info["price"]
+        discount_amount = round(base_price - disc, 2)
         if discount_amount < 0:
             discount_amount = 0.0
 
         line_items.append({
             "variant_id":       info["id"],
             "quantity":         qty,
-            "price":            f"{base_price:.2f}",      # set base
+            "price":            f"{base_price:.2f}",
             "applied_discount": {
                 "description": "GT DISCOUNT",
                 "value_type":  "fixed_amount",
@@ -165,13 +187,18 @@ def create_draft_from_method():
             }
         })
 
-    if not line_items:
+    if not line_items and not shipping_line:
         return jsonify({"error":"No valid variants found"}), 400
 
-    payload = {"draft_order":{
+    draft = {
         "line_items":                    line_items,
         "use_customer_default_address": True
-    }}
+    }
+    if shipping_line:
+        draft["shipping_line"] = shipping_line
+
+    payload = {"draft_order": draft}
+
     headers = {
         "Content-Type":           "application/json",
         "X-Shopify-Access-Token": ACCESS_TOKEN
@@ -185,9 +212,11 @@ def create_draft_from_method():
     send_alert_email("⚠️ Method Draft Failed", resp.text)
     return jsonify({"error":"Failed","details":resp.text}), 500
 
+
 @app.route("/ping", methods=["GET"])
 def ping():
     return "pong", 200
+
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
