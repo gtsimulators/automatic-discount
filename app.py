@@ -206,9 +206,8 @@ def create_draft_from_method():
     )
 
     # ←— **only this block changed** —→
-    if resp.status_code == 201:
-        invoice_url = resp.json()["draft_order"]["invoice_url"]
-        return jsonify({"checkout_url": invoice_url}), 200
+    if resp.status_code in (200, 201) and "draft_order" in resp.json():
+        return jsonify({"checkout_url": resp.json()["draft_order"]["invoice_url"]}), 200
 
     send_alert_email("⚠️ Method Draft Failed", f"{resp.status_code} {resp.text}")
     return jsonify({"error":"Failed","details":resp.text}), 500
