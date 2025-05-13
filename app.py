@@ -126,24 +126,12 @@ def create_draft_order():
         headers=headers, json=payload, verify=CA_BUNDLE
     )
 
-    # ==== SUCCESS HANDLING ====
-    try:
-        data = resp.json()
-    except ValueError:
-        send_alert_email("⚠️ Draft Order Failed (non-JSON)", resp.text)
-        return jsonify({"error":"Invalid JSON from Shopify"}), 500
+    if resp.status_code == 201:
+        invoice_url = resp.json()["draft_order"]["invoice_url"]
+        return jsonify({"checkout_url": invoice_url}), 200
 
-    if resp.status_code == 201 and "draft_order" in data:
-        invoice_url = data["draft_order"].get("invoice_url")
-        if invoice_url:
-            return jsonify({"checkout_url": invoice_url}), 200
-        else:
-            send_alert_email("⚠️ Missing invoice_url", str(data))
-            return jsonify({"error":"No invoice_url returned"}), 500
-
-    # ==== FAILURE ====
     send_alert_email("⚠️ Draft Order Failed", f"{resp.status_code} {resp.text}")
-    return jsonify({"error":"Failed to create draft","details":data}), 500
+    return jsonify({"error":"Failed","details":resp.text}), 500
 
 @app.route("/create-draft-from-method", methods=["POST"])
 def create_draft_from_method():
@@ -159,7 +147,7 @@ def create_draft_from_method():
     if quote_info and isinstance(quote_info, list):
         quote_number = quote_info[0].get("quote_number")
 
-    line_items   = []
+    line_items    = []
     shipping_line = None
 
     for it in items:
@@ -217,24 +205,13 @@ def create_draft_from_method():
         headers=headers, json=payload, verify=CA_BUNDLE
     )
 
-    # ==== SUCCESS HANDLING ====
-    try:
-        data = resp.json()
-    except ValueError:
-        send_alert_email("⚠️ Method Draft Failed (non-JSON)", resp.text)
-        return jsonify({"error":"Invalid JSON from Shopify"}), 500
+    # ←— **only this block changed** —→
+    if resp.status_code == 201:
+        invoice_url = resp.json()["draft_order"]["invoice_url"]
+        return jsonify({"checkout_url": invoice_url}), 200
 
-    if resp.status_code == 201 and "draft_order" in data:
-        invoice_url = data["draft_order"].get("invoice_url")
-        if invoice_url:
-            return jsonify({"checkout_url": invoice_url}), 200
-        else:
-            send_alert_email("⚠️ Missing invoice_url", str(data))
-            return jsonify({"error":"No invoice_url returned"}), 500
-
-    # ==== FAILURE ====
     send_alert_email("⚠️ Method Draft Failed", f"{resp.status_code} {resp.text}")
-    return jsonify({"error":"Failed to create draft","details":data}), 500
+    return jsonify({"error":"Failed","details":resp.text}), 500
 
 @app.route("/ping", methods=["GET"])
 def ping():
