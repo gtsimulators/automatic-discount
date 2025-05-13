@@ -107,8 +107,8 @@ def create_draft_order():
             "applied_discount": {
                 "description": "GT DISCOUNT",
                 "value_type":  "fixed_amount",
-                "value":       f"{amt:.2f}",
-                "amount":      f"{amt:.2f}"
+                "value":       f"{(discount_amount * qty):.2f}",
+                "amount":      f"{(discount_amount * qty):.2f}"
             }
         })
 
