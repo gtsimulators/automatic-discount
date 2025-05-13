@@ -7,7 +7,7 @@ import re
 import smtplib
 from email.message import EmailMessage
 
-# Determine which CA bundle to use: environment override or system default
+# Determine which CA bundle to use
 CA_BUNDLE = os.getenv("REQUESTS_CA_BUNDLE", "/etc/ssl/certs/ca-certificates.crt")
 print("🔒 Using CA bundle:", CA_BUNDLE, "exists?", os.path.exists(CA_BUNDLE), flush=True)
 
@@ -22,7 +22,6 @@ ALERT_EMAIL    = "fp@gtsimulators.com"
 SENDER_EMAIL   = "nandobentzen@gmail.com"
 ALERT_PASSWORD = os.getenv("PASS")
 
-# ✅ Alert function
 def send_alert_email(subject, body):
     msg = EmailMessage()
     msg.set_content(body)
@@ -37,29 +36,26 @@ def send_alert_email(subject, body):
     except Exception as e:
         print(f"❌ Failed to send alert email: {e}", flush=True)
 
-# ✅ Discount lookup from tags (unchanged)
 def get_discount_from_tags(product_id):
     headers  = {"X-Shopify-Access-Token": ACCESS_TOKEN}
     url      = f"https://{SHOP_NAME}/admin/api/{API_VERSION}/products/{product_id}.json"
-    response = requests.get(url, headers=headers, verify=CA_BUNDLE)
-    if response.status_code != 200:
+    resp     = requests.get(url, headers=headers, verify=CA_BUNDLE)
+    if resp.status_code != 200:
         return 0.0
-    product = response.json().get("product", {})
-    tags    = [t.strip() for t in product.get("tags","").split(",")]
-    for tag in tags:
-        match = re.search(r"(\d+(\.\d+)?)%", tag)
-        if match:
-            return float(match.group(1))
+    tags = resp.json().get("product", {}).get("tags", "")
+    for t in tags.split(","):
+        m = re.search(r"(\d+(\.\d+)?)%", t.strip())
+        if m:
+            return float(m.group(1))
     return 0.0
 
-# ► GraphQL lookup: find a variant EXACTLY by SKU
 def lookup_variant_id(sku: str) -> int | None:
     endpoint = f"https://{SHOP_NAME}/admin/api/{API_VERSION}/graphql.json"
     headers = {
         "X-Shopify-Access-Token": ACCESS_TOKEN,
         "Content-Type": "application/json"
     }
-    graphql_query = """
+    query = """
     query findVariantBySku($sku: String!) {
       productVariants(first: 1, query: $sku) {
         edges {
@@ -68,54 +64,46 @@ def lookup_variant_id(sku: str) -> int | None:
       }
     }
     """
-    payload = {"query": graphql_query, "variables": {"sku": f"sku:{sku}"}}
+    payload = {"query": query, "variables": {"sku": f"sku:{sku}"}}
     resp = requests.post(endpoint, json=payload, headers=headers, verify=CA_BUNDLE)
     if resp.status_code != 200:
-        print(f"⚠️ GraphQL error for SKU {sku}: {resp.status_code}", flush=True)
         return None
-
     edges = resp.json().get("data", {}) \
-                   .get("productVariants", {}) \
-                   .get("edges", [])
+                    .get("productVariants", {}) \
+                    .get("edges", [])
     if not edges:
         return None
-
     node = edges[0]["node"]
-    if node.get("sku", "").upper() != sku.upper():
+    if node.get("sku","").upper() != sku.upper():
         return None
+    gid = node["id"]  # "gid://shopify/ProductVariant/123123"
+    return int(gid.split("/")[-1])
 
-    gid = node["id"]  # ex: "gid://shopify/ProductVariant/1234567890"
-    return int(gid.rsplit("/", 1)[-1])
-
-# ✅ Create draft order (cart.js flow) — unchanged
 @app.route("/create-draft", methods=["POST"])
 def create_draft_order():
-    cart_data  = request.get_json()
-    line_items = []
-    for item in cart_data.get("items", []):
-        pid      = item["product_id"]
-        price    = item["price"]
-        vid      = item["variant_id"]
-        qty      = item["quantity"]
-        discount = get_discount_from_tags(pid)
-
-        discount_amount = round(price * discount / 100, 2)
-        if price - discount_amount < 0:
-            discount_amount = price - 0.01
-
-        line_items.append({
+    cart = request.get_json().get("items", [])
+    line = []
+    for i in cart:
+        pid      = i["product_id"]
+        price    = i["price"]
+        vid      = i["variant_id"]
+        qty      = i["quantity"]
+        disc_pct = get_discount_from_tags(pid)
+        disc_amt = round(price * disc_pct / 100, 2)
+        if price - disc_amt < 0:
+            disc_amt = price - 0.01
+        line.append({
             "variant_id": vid,
             "quantity":   qty,
             "applied_discount": {
-                "description": "GT DISCOUNT",
-                "value_type":  "fixed_amount",
-                "value":       f"{discount_amount:.2f}",
-                "amount":      f"{discount_amount:.2f}"
+                "description":"GT DISCOUNT",
+                "value_type": "fixed_amount",
+                "value":      f"{disc_amt:.2f}",
+                "amount":     f"{disc_amt:.2f}"
             }
         })
-
-    payload = {"draft_order": {
-        "line_items":                    line_items,
+    payload = {"draft_order":{
+        "line_items":                    line,
         "use_customer_default_address": True,
         "note":                         ""
     }}
@@ -125,53 +113,52 @@ def create_draft_order():
     }
     resp = requests.post(
         f"https://{SHOP_NAME}/admin/api/{API_VERSION}/draft_orders.json",
-        headers=headers,
-        json=payload,
-        verify=CA_BUNDLE
+        headers=headers, json=payload, verify=CA_BUNDLE
     )
-
     if resp.status_code == 201:
         return jsonify({"checkout_url": resp.json()["draft_order"]["invoice_url"]})
     send_alert_email("⚠️ Draft Order Failed", f"{resp.status_code} {resp.text}")
-    return jsonify({"error": "Failed to create draft", "details": resp.text}), 500
+    return jsonify({"error":"Failed to create draft","details":resp.text}), 500
 
-# ✅ Create draft order from Method (SKU, list, disc) using GraphQL lookup
 @app.route("/create-draft-from-method", methods=["POST"])
 def create_draft_from_method():
-    data  = request.get_json()
-    items = data.get("product_list", [])
+    items = request.get_json().get("product_list", [])
     if not items:
-        return jsonify({"error": "No items received"}), 400
+        return jsonify({"error":"No items received"}), 400
 
-    line_items = []
+    line = []
     for it in items:
-        sku  = it.get("sku","").strip()
-        qty  = int(it.get("qty", 1))
-        disc = float(it.get("disc", 0))
-
-        vid = lookup_variant_id(sku)
+        sku       = it.get("sku","").strip()
+        list_price= float(it.get("list",0))
+        disc_price= float(it.get("disc",0))
+        qty       = int(it.get("qty",1))
+        vid       = lookup_variant_id(sku)
         if not vid:
             print(f"⚠️ SKU {sku} not found, skipping", flush=True)
             continue
 
-        # ——— Here is the ONE ADDITION: include "price": your list price ———
-        line_items.append({
+        # —— HERE: compute discount_amount = list_price - disc_price
+        discount_amount = round(list_price - disc_price, 2)
+        if discount_amount < 0:
+            discount_amount = 0.0
+
+        line.append({
             "variant_id": vid,
             "quantity":   qty,
-            "price":      float(it.get("list", 0)),        # ← override list price
+            "price":      list_price,      # start from your list price
             "applied_discount": {
-                "description": "GT DISCOUNT",
-                "value_type":  "fixed_amount",
-                "value":       f"{disc:.2f}",
-                "amount":      f"{disc:.2f}"
+                "description":"GT DISCOUNT",
+                "value_type": "fixed_amount",
+                "value":      f"{discount_amount:.2f}",
+                "amount":     f"{discount_amount:.2f}"
             }
         })
 
-    if not line_items:
-        return jsonify({"error": "No valid variants found"}), 400
+    if not line:
+        return jsonify({"error":"No valid variants found"}), 400
 
-    payload = {"draft_order": {
-        "line_items":                    line_items,
+    payload = {"draft_order":{
+        "line_items":                    line,
         "use_customer_default_address": True
     }}
     headers = {
@@ -180,17 +167,13 @@ def create_draft_from_method():
     }
     resp = requests.post(
         f"https://{SHOP_NAME}/admin/api/{API_VERSION}/draft_orders.json",
-        headers=headers,
-        json=payload,
-        verify=CA_BUNDLE
+        headers=headers, json=payload, verify=CA_BUNDLE
     )
-
     if resp.status_code == 201:
         return jsonify({"checkout_url": resp.json()["draft_order"]["invoice_url"]})
     send_alert_email("⚠️ Method Draft Failed", resp.text)
-    return jsonify({"error": "Failed to create draft", "details": resp.text}), 500
+    return jsonify({"error":"Failed to create draft","details":resp.text}), 500
 
-# ✅ Ping endpoint
 @app.route("/ping", methods=["GET"])
 def ping():
     return "pong", 200
