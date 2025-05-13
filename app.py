@@ -48,7 +48,7 @@ def get_discount_from_tags(product_id):
             return float(m.group(1))
     return 0.0
 
-# — fetch full variant info via GraphQL — returns dict with id, price, compareAtPrice
+# — fetch full variant info via GraphQL — returns dict with id and price
 def fetch_variant_info(sku: str):
     endpoint = f"https://{SHOP_NAME}/admin/api/{API_VERSION}/graphql.json"
     headers = {
@@ -63,7 +63,6 @@ def fetch_variant_info(sku: str):
             id
             sku
             price
-            compareAtPrice
           }
         }
       }
@@ -85,9 +84,8 @@ def fetch_variant_info(sku: str):
     gid = node["id"]  # e.g. "gid://shopify/ProductVariant/1234567890"
     vid = int(gid.rsplit("/",1)[-1])
     return {
-        "id": vid,
-        "price": float(node["price"]),
-        "compareAtPrice": float(node["compareAtPrice"]) if node.get("compareAtPrice") else None
+        "id":    vid,
+        "price": float(node["price"])
     }
 
 @app.route("/create-draft", methods=["POST"])
@@ -96,7 +94,7 @@ def create_draft_order():
     line_items = []
     for i in items:
         pid   = i["product_id"]
-        price = i["price"]
+        price = float(i["price"])
         vid   = i["variant_id"]
         qty   = i["quantity"]
         pct   = get_discount_from_tags(pid)
@@ -144,13 +142,13 @@ def create_draft_from_method():
         sku  = it.get("sku","").strip()
         qty  = int(it.get("qty",1))
         disc = float(it.get("disc","0").replace(",",""))
-
         info = fetch_variant_info(sku)
         if not info:
             print(f"⚠️ SKU {sku} not found, skipping", flush=True)
             continue
 
-        base_price       = info["compareAtPrice"] if info["compareAtPrice"] else info["price"]
+        # ALWAYS use Shopify price as base
+        base_price       = info["price"]
         discount_amount  = round(base_price - disc, 2)
         if discount_amount < 0:
             discount_amount = 0.0
@@ -158,6 +156,7 @@ def create_draft_from_method():
         line_items.append({
             "variant_id":       info["id"],
             "quantity":         qty,
+            "price":            f"{base_price:.2f}",      # set base
             "applied_discount": {
                 "description": "GT DISCOUNT",
                 "value_type":  "fixed_amount",
