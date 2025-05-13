@@ -82,7 +82,6 @@ def fetch_variant_info(sku: str):
     node = edges[0]["node"]
     if node.get("sku","").upper() != sku.upper():
         return None
-    # extract numeric id
     gid = node["id"]  # e.g. "gid://shopify/ProductVariant/1234567890"
     vid = int(gid.rsplit("/",1)[-1])
     return {
@@ -96,12 +95,12 @@ def create_draft_order():
     items = request.get_json().get("items", [])
     line_items = []
     for i in items:
-        pid      = i["product_id"]
-        price    = i["price"]
-        vid      = i["variant_id"]
-        qty      = i["quantity"]
-        pct      = get_discount_from_tags(pid)
-        amt      = round(price * pct/100, 2)
+        pid   = i["product_id"]
+        price = i["price"]
+        vid   = i["variant_id"]
+        qty   = i["quantity"]
+        pct   = get_discount_from_tags(pid)
+        amt   = round(price * pct/100, 2)
         if price - amt < 0:
             amt = price - 0.01
         line_items.append({
@@ -144,23 +143,21 @@ def create_draft_from_method():
     for it in items:
         sku  = it.get("sku","").strip()
         qty  = int(it.get("qty",1))
-        # strip commas
         disc = float(it.get("disc","0").replace(",",""))
+
         info = fetch_variant_info(sku)
         if not info:
             print(f"⚠️ SKU {sku} not found, skipping", flush=True)
             continue
 
-        base_price = info["compareAtPrice"] if info["compareAtPrice"] else info["price"]
-        # calculate discount amount so final == disc_price
-        discount_amount = round(base_price - disc, 2)
+        base_price       = info["compareAtPrice"] if info["compareAtPrice"] else info["price"]
+        discount_amount  = round(base_price - disc, 2)
         if discount_amount < 0:
             discount_amount = 0.0
 
         line_items.append({
             "variant_id":       info["id"],
             "quantity":         qty,
-            "price":            base_price,
             "applied_discount": {
                 "description": "GT DISCOUNT",
                 "value_type":  "fixed_amount",
