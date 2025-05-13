@@ -126,10 +126,10 @@ def create_draft_order():
         headers=headers, json=payload, verify=CA_BUNDLE
     )
 
-    # ←— here we're accepting 200 or 201 as success
-    body = resp.json()
-    if resp.status_code in (200, 201) and "draft_order" in body:
-        return jsonify({"checkout_url": body["draft_order"]["invoice_url"]}), 200
+    # ←— accept any 2xx and return the invoice_url
+    if 200 <= resp.status_code < 300:
+        invoice_url = resp.json().get("draft_order", {}).get("invoice_url")
+        return jsonify({"checkout_url": invoice_url}), 200
 
     send_alert_email("⚠️ Draft Order Failed", f"{resp.status_code} {resp.text}")
     return jsonify({"error":"Failed","details":resp.text}), 500
@@ -143,7 +143,6 @@ def create_draft_from_method():
     if not items:
         return jsonify({"error":"No items received"}), 400
 
-    # pull quote_number (if any)
     quote_number = None
     if quote_info and isinstance(quote_info, list):
         quote_number = quote_info[0].get("quote_number")
@@ -206,10 +205,10 @@ def create_draft_from_method():
         headers=headers, json=payload, verify=CA_BUNDLE
     )
 
-    body = resp.json()
-    # ←— same change here
-    if resp.status_code in (200, 201) and "draft_order" in body:
-        return jsonify({"checkout_url": body["draft_order"]["invoice_url"]}), 200
+    # ←— accept any 2xx and return the invoice_url
+    if 200 <= resp.status_code < 300:
+        invoice_url = resp.json().get("draft_order", {}).get("invoice_url")
+        return jsonify({"checkout_url": invoice_url}), 200
 
     send_alert_email("⚠️ Method Draft Failed", f"{resp.status_code} {resp.text}")
     return jsonify({"error":"Failed","details":resp.text}), 500
