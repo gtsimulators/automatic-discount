@@ -48,22 +48,31 @@ def get_discount_from_tags(product_id):
             return float(m.group(1))
     return 0.0
 
-def lookup_variant_id(sku: str) -> int | None:
+# — fetch full variant info via GraphQL — returns dict with id, price, compareAtPrice
+def fetch_variant_info(sku: str):
     endpoint = f"https://{SHOP_NAME}/admin/api/{API_VERSION}/graphql.json"
     headers = {
         "X-Shopify-Access-Token": ACCESS_TOKEN,
         "Content-Type": "application/json"
     }
     query = """
-    query findVariantBySku($sku: String!) {
+    query findVariant($sku: String!) {
       productVariants(first: 1, query: $sku) {
-        edges { node { id sku } }
+        edges {
+          node {
+            id
+            sku
+            price
+            compareAtPrice
+          }
+        }
       }
     }
     """
     payload = {"query": query, "variables": {"sku": f"sku:{sku}"}}
     resp = requests.post(endpoint, json=payload, headers=headers, verify=CA_BUNDLE)
     if resp.status_code != 200:
+        print(f"⚠️ GraphQL error for SKU {sku}: {resp.status_code}", flush=True)
         return None
     edges = resp.json().get("data", {}) \
                    .get("productVariants", {}) \
@@ -73,8 +82,14 @@ def lookup_variant_id(sku: str) -> int | None:
     node = edges[0]["node"]
     if node.get("sku","").upper() != sku.upper():
         return None
+    # extract numeric id
     gid = node["id"]  # e.g. "gid://shopify/ProductVariant/1234567890"
-    return int(gid.rsplit("/", 1)[-1])
+    vid = int(gid.rsplit("/",1)[-1])
+    return {
+        "id": vid,
+        "price": float(node["price"]),
+        "compareAtPrice": float(node["compareAtPrice"]) if node.get("compareAtPrice") else None
+    }
 
 @app.route("/create-draft", methods=["POST"])
 def create_draft_order():
@@ -103,7 +118,7 @@ def create_draft_order():
     payload = {"draft_order":{
         "line_items":                    line_items,
         "use_customer_default_address": True,
-        "note":                         ""
+        "note":                          ""
     }}
     headers = {
         "Content-Type":           "application/json",
@@ -127,25 +142,25 @@ def create_draft_from_method():
 
     line_items = []
     for it in items:
-        sku        = it.get("sku","").strip()
-        qty        = int(it.get("qty", 1))
-        # strip commas before float conversion
-        list_price = float(it.get("list","0").replace(",",""))
-        disc_price = float(it.get("disc","0").replace(",",""))
-
-        vid = lookup_variant_id(sku)
-        if not vid:
+        sku  = it.get("sku","").strip()
+        qty  = int(it.get("qty",1))
+        # strip commas
+        disc = float(it.get("disc","0").replace(",",""))
+        info = fetch_variant_info(sku)
+        if not info:
             print(f"⚠️ SKU {sku} not found, skipping", flush=True)
             continue
 
-        discount_amount = round(list_price - disc_price, 2)
+        base_price = info["compareAtPrice"] if info["compareAtPrice"] else info["price"]
+        # calculate discount amount so final == disc_price
+        discount_amount = round(base_price - disc, 2)
         if discount_amount < 0:
             discount_amount = 0.0
 
         line_items.append({
-            "variant_id":       vid,
+            "variant_id":       info["id"],
             "quantity":         qty,
-            "price":            list_price,
+            "price":            base_price,
             "applied_discount": {
                 "description": "GT DISCOUNT",
                 "value_type":  "fixed_amount",
