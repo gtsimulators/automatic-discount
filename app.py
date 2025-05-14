@@ -41,7 +41,7 @@ def get_discount_from_tags(product_id):
     resp    = requests.get(url, headers=headers, verify=CA_BUNDLE)
     if resp.status_code != 200:
         return 0.0
-    tags = resp.json().get("product", {}).get("tags","")
+    tags = resp.json().get("product", {}).get("tags", "")
     for t in tags.split(","):
         m = re.search(r"(\d+(\.\d+)?)%", t.strip())
         if m:
@@ -73,57 +73,63 @@ def fetch_variant_info(sku: str):
     if resp.status_code != 200:
         print(f"⚠️ GraphQL error for SKU {sku}: {resp.status_code}", flush=True)
         return None
-    edges = resp.json().get("data", {}) \
-                   .get("productVariants", {}) \
-                   .get("edges", [])
+    edges = (
+        resp.json()
+        .get("data", {})
+        .get("productVariants", {})
+        .get("edges", [])
+    )
     if not edges:
         return None
     node = edges[0]["node"]
-    if node.get("sku","").upper() != sku.upper():
+    if node.get("sku", "").upper() != sku.upper():
         return None
     gid = node["id"]  # e.g. "gid://shopify/ProductVariant/1234567890"
-    vid = int(gid.rsplit("/",1)[-1])
-    return {
-        "id":    vid,
-        "price": float(node["price"])
-    }
+    vid = int(gid.rsplit("/", 1)[-1])
+    return {"id": vid, "price": float(node["price"])}
 
 @app.route("/create-draft", methods=["POST"])
 def create_draft_order():
     items = request.get_json().get("items", [])
     line_items = []
     for i in items:
-        pid   = i["product_id"]
+        pid = i["product_id"]
         price = float(i["price"])
-        vid   = i["variant_id"]
-        qty   = i["quantity"]
-        pct   = get_discount_from_tags(pid)
-        amt   = round(price * pct/100, 2)
+        vid = i["variant_id"]
+        qty = i["quantity"]
+        pct = get_discount_from_tags(pid)
+        amt = round(price * pct / 100, 2)
         if price - amt < 0:
             amt = price - 0.01
-        line_items.append({
-            "variant_id": vid,
-            "quantity":   qty,
-            "applied_discount": {
-                "description": "GT DISCOUNT",
-                "value_type":  "fixed_amount",
-                "value":       f"{amt:.2f}",
-                "amount":      f"{amt:.2f}"
+        line_items.append(
+            {
+                "variant_id": vid,
+                "quantity": qty,
+                "applied_discount": {
+                    "description": "GT DISCOUNT",
+                    "value_type": "fixed_amount",
+                    "value": f"{amt:.2f}",
+                    "amount": f"{amt:.2f}",
+                },
             }
-        })
+        )
 
-    payload = {"draft_order":{
-        "line_items":                    line_items,
-        "use_customer_default_address": True,
-        "note":                          ""
-    }}
+    payload = {
+        "draft_order": {
+            "line_items": line_items,
+            "use_customer_default_address": True,
+            "note": "",
+        }
+    }
     headers = {
-        "Content-Type":           "application/json",
-        "X-Shopify-Access-Token": ACCESS_TOKEN
+        "Content-Type": "application/json",
+        "X-Shopify-Access-Token": ACCESS_TOKEN,
     }
     resp = requests.post(
         f"https://{SHOP_NAME}/admin/api/{API_VERSION}/draft_orders.json",
-        headers=headers, json=payload, verify=CA_BUNDLE
+        headers=headers,
+        json=payload,
+        verify=CA_BUNDLE,
     )
 
     # ←— accept any 2xx and return the invoice_url
@@ -132,33 +138,38 @@ def create_draft_order():
         return jsonify({"checkout_url": invoice_url}), 200
 
     send_alert_email("⚠️ Draft Order Failed", f"{resp.status_code} {resp.text}")
-    return jsonify({"error":"Failed","details":resp.text}), 500
+    return jsonify({"error": "Failed", "details": resp.text}), 500
 
 @app.route("/create-draft-from-method", methods=["POST"])
 def create_draft_from_method():
-    data       = request.get_json()
-    items      = data.get("product_list", [])
+    data = request.get_json()
+    items = data.get("product_list", [])
     quote_info = data.get("quote_info", [])
 
     if not items:
-        return jsonify({"error":"No items received"}), 400
+        return jsonify({"error": "No items received"}), 400
 
     quote_number = None
+    quote_tax = None  # track tax_info value
     if quote_info and isinstance(quote_info, list):
-        quote_number = quote_info[0].get("quote_number")
+        for q in quote_info:
+            if "quote_number" in q:
+                quote_number = q["quote_number"]
+            if "tax_info" in q:
+                quote_tax = float(str(q["tax_info"]).replace(",", ""))
 
-    line_items            = []
-    shipping_line         = None
-    order_discount_total  = 0.0  # accumulate negative prices here
-    tax_exempt            = False  # set true if any non-ignored ST item added
+    line_items = []
+    shipping_line = None
+    order_discount_total = 0.0  # accumulate negative prices here
+    tax_exempt = False  # set true if order should be non-taxable via ST or tax_info
 
     ignored_st = {"STCA", "STIN", "STNY", "STPA", "STTX", "STWA"}
 
     for it in items:
-        sku_raw = it.get("sku","").strip()
-        sku     = sku_raw  # keep case for titles if needed
-        qty     = int(it.get("qty",1))
-        disc    = float(it.get("disc","0").replace(",",""))
+        sku_raw = it.get("sku", "").strip()
+        sku = sku_raw  # preserve original case for titles
+        qty = int(it.get("qty", 1))
+        disc = float(it.get("disc", "0").replace(",", ""))
 
         sku_upper = sku_raw.upper()
 
@@ -169,9 +180,9 @@ def create_draft_from_method():
         # Shipping line
         if sku_upper.startswith("S&H") and quote_number:
             shipping_line = {
-                "title":  f"QUOTE # {quote_number}",
+                "title": f"QUOTE # {quote_number}",
                 "custom": True,
-                "price":  f"{disc:.2f}"
+                "price": f"{disc:.2f}",
             }
             continue
 
@@ -187,13 +198,15 @@ def create_draft_from_method():
                 continue
             # any other ST → add non-taxable custom item titled SALES TAX
             tax_exempt = True
-            line_items.append({
-                "title":    "SALES TAX",
-                "price":    f"{disc:.2f}",
-                "quantity": qty,
-                "custom":   True,
-                "taxable":  False  # explicit just in case
-            })
+            line_items.append(
+                {
+                    "title": "SALES TAX",
+                    "price": f"{disc:.2f}",
+                    "quantity": qty,
+                    "custom": True,
+                    "taxable": False,
+                }
+            )
             continue
 
         # Blank SKU with zero price → ignore
@@ -204,58 +217,70 @@ def create_draft_from_method():
 
         # Unrecognized SKU → custom item
         if not info:
-            line_items.append({
-                "title":    sku or "Custom Item",
-                "price":    f"{disc:.2f}",
-                "quantity": qty,
-                "custom":   True
-            })
+            line_items.append(
+                {
+                    "title": sku or "Custom Item",
+                    "price": f"{disc:.2f}",
+                    "quantity": qty,
+                    "custom": True,
+                }
+            )
             continue
 
-        base_price      = info["price"]
+        base_price = info["price"]
         discount_amount = round(base_price - disc, 2)
         if discount_amount < 0:
             discount_amount = 0.0
 
-        line_items.append({
-            "variant_id":       info["id"],
-            "quantity":         qty,
-            "price":            f"{base_price:.2f}",
-            "applied_discount": {
-                "description": "GT DISCOUNT",
-                "value_type":  "fixed_amount",
-                "value":       f"{discount_amount:.2f}",
-                "amount":      f"{discount_amount:.2f}"
+        line_items.append(
+            {
+                "variant_id": info["id"],
+                "quantity": qty,
+                "price": f"{base_price:.2f}",
+                "applied_discount": {
+                    "description": "GT DISCOUNT",
+                    "value_type": "fixed_amount",
+                    "value": f"{discount_amount:.2f}",
+                    "amount": f"{discount_amount:.2f}",
+                },
             }
-        })
+        )
+
+    if not tax_exempt and quote_tax is not None:
+        # apply tax_info rule only if no ST triggered non-taxable
+        if quote_tax == 0:
+            tax_exempt = True
+        # if quote_tax > 0, leave tax_exempt False
 
     if not line_items and not shipping_line:
-        return jsonify({"error":"No valid variants found"}), 400
+        return jsonify({"error": "No valid variants found"}), 400
 
     draft_body = {
-        "line_items":                    line_items,
-        "use_customer_default_address": True
+        "line_items": line_items,
+        "use_customer_default_address": True,
     }
     if shipping_line:
         draft_body["shipping_line"] = shipping_line
     if order_discount_total > 0:
         draft_body["applied_discount"] = {
             "description": "GT Discount",
-            "value_type":  "fixed_amount",
-            "value":       f"{order_discount_total:.2f}",
-            "amount":      f"{order_discount_total:.2f}"
+            "value_type": "fixed_amount",
+            "value": f"{order_discount_total:.2f}",
+            "amount": f"{order_discount_total:.2f}",
         }
     if tax_exempt:
         draft_body["tax_exempt"] = True  # mark entire draft as non-taxable
 
     payload = {"draft_order": draft_body}
     headers = {
-        "Content-Type":           "application/json",
-        "X-Shopify-Access-Token": ACCESS_TOKEN
+        "Content-Type": "application/json",
+        "X-Shopify-Access-Token": ACCESS_TOKEN,
     }
     resp = requests.post(
         f"https://{SHOP_NAME}/admin/api/{API_VERSION}/draft_orders.json",
-        headers=headers, json=payload, verify=CA_BUNDLE
+        headers=headers,
+        json=payload,
+        verify=CA_BUNDLE,
     )
 
     # ←— accept any 2xx and return the invoice_url
@@ -264,7 +289,7 @@ def create_draft_from_method():
         return jsonify({"checkout_url": invoice_url}), 200
 
     send_alert_email("⚠️ Method Draft Failed", f"{resp.status_code} {resp.text}")
-    return jsonify({"error":"Failed","details":resp.text}), 500
+    return jsonify({"error": "Failed", "details": resp.text}), 500
 
 @app.route("/ping", methods=["GET"])
 def ping():
