@@ -147,16 +147,24 @@ def create_draft_from_method():
     if quote_info and isinstance(quote_info, list):
         quote_number = quote_info[0].get("quote_number")
 
-    line_items    = []
-    shipping_line = None
+    line_items            = []
+    shipping_line         = None
+    order_discount_total  = 0.0  # accumulate negative prices here
 
     for it in items:
-        sku  = it.get("sku","").strip()
-        qty  = int(it.get("qty",1))
-        disc = float(it.get("disc","0").replace(",",""))
+        sku_raw = it.get("sku","").strip()
+        sku     = sku_raw  # preserve original case for titles
+        qty     = int(it.get("qty",1))
+        disc    = float(it.get("disc","0").replace(",",""))
+
+        sku_upper = sku_raw.upper()
+
+        # Skip subtotal rows
+        if sku_upper in ("SUBTOTAL", "SUB-TOTAL"):
+            continue
 
         # Shipping line
-        if sku.upper().startswith("S&H") and quote_number:
+        if sku_upper.startswith("S&H") and quote_number:
             shipping_line = {
                 "title":  f"QUOTE # {quote_number}",
                 "custom": True,
@@ -164,14 +172,23 @@ def create_draft_from_method():
             }
             continue
 
+        # Negative price → order-level discount
+        if disc < 0:
+            order_discount_total += abs(disc)
+            continue
+
         # ST-prefixed custom items
-        if sku.upper().startswith("ST"):
+        if sku_upper.startswith("ST"):
             line_items.append({
-                "title":    sku,
+                "title":    sku or "Custom Item",
                 "price":    f"{disc:.2f}",
                 "quantity": qty,
                 "custom":   True
             })
+            continue
+
+        # Blank SKU with zero price → ignore
+        if not sku and disc == 0:
             continue
 
         info = fetch_variant_info(sku)
@@ -179,7 +196,7 @@ def create_draft_from_method():
         # Unrecognized SKU → custom item
         if not info:
             line_items.append({
-                "title":    sku,
+                "title":    sku or "Custom Item",
                 "price":    f"{disc:.2f}",
                 "quantity": qty,
                 "custom":   True
@@ -212,6 +229,13 @@ def create_draft_from_method():
     }
     if shipping_line:
         draft_body["shipping_line"] = shipping_line
+    if order_discount_total > 0:
+        draft_body["applied_discount"] = {
+            "description": "GT Discount",
+            "value_type":  "fixed_amount",
+            "value":       f"{order_discount_total:.2f}",
+            "amount":      f"{order_discount_total:.2f}"
+        }
 
     payload = {"draft_order": draft_body}
     headers = {
