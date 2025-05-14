@@ -155,6 +155,7 @@ def create_draft_from_method():
         qty  = int(it.get("qty",1))
         disc = float(it.get("disc","0").replace(",",""))
 
+        # Shipping line
         if sku.upper().startswith("S&H") and quote_number:
             shipping_line = {
                 "title":  f"QUOTE # {quote_number}",
@@ -163,9 +164,26 @@ def create_draft_from_method():
             }
             continue
 
+        # ST-prefixed custom items
+        if sku.upper().startswith("ST"):
+            line_items.append({
+                "title":    sku,
+                "price":    f"{disc:.2f}",
+                "quantity": qty,
+                "custom":   True
+            })
+            continue
+
         info = fetch_variant_info(sku)
+
+        # Unrecognized SKU → custom item
         if not info:
-            print(f"⚠️ SKU {sku} not found, skipping", flush=True)
+            line_items.append({
+                "title":    sku,
+                "price":    f"{disc:.2f}",
+                "quantity": qty,
+                "custom":   True
+            })
             continue
 
         base_price      = info["price"]
