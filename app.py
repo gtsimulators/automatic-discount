@@ -68,7 +68,7 @@ def fetch_variant_info(sku: str):
       }
     }
     """
-    payload = {"query": query, "variables": {"sku": f"sku:{sku}"}}
+    payload = {"query": query, "variables": {"sku": f'sku:"{sku}"'}}
     resp = requests.post(endpoint, json=payload, headers=headers, verify=CA_BUNDLE)
     if resp.status_code != 200:
         print(f"⚠️ GraphQL error for SKU {sku}: {resp.status_code}", flush=True)
