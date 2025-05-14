@@ -150,10 +150,13 @@ def create_draft_from_method():
     line_items            = []
     shipping_line         = None
     order_discount_total  = 0.0  # accumulate negative prices here
+    tax_exempt            = False  # set true if any non-ignored ST item added
+
+    ignored_st = {"STCA", "STIN", "STNY", "STPA", "STTX", "STWA"}
 
     for it in items:
         sku_raw = it.get("sku","").strip()
-        sku     = sku_raw  # preserve original case for titles
+        sku     = sku_raw  # keep case for titles if needed
         qty     = int(it.get("qty",1))
         disc    = float(it.get("disc","0").replace(",",""))
 
@@ -177,13 +180,19 @@ def create_draft_from_method():
             order_discount_total += abs(disc)
             continue
 
-        # ST-prefixed custom items
+        # ST-prefixed logic
         if sku_upper.startswith("ST"):
+            # skip specific state codes
+            if sku_upper in ignored_st:
+                continue
+            # any other ST → add non-taxable custom item titled SALES TAX
+            tax_exempt = True
             line_items.append({
-                "title":    sku or "Custom Item",
+                "title":    "SALES TAX",
                 "price":    f"{disc:.2f}",
                 "quantity": qty,
-                "custom":   True
+                "custom":   True,
+                "taxable":  False  # explicit just in case
             })
             continue
 
@@ -236,6 +245,8 @@ def create_draft_from_method():
             "value":       f"{order_discount_total:.2f}",
             "amount":      f"{order_discount_total:.2f}"
         }
+    if tax_exempt:
+        draft_body["tax_exempt"] = True  # mark entire draft as non-taxable
 
     payload = {"draft_order": draft_body}
     headers = {
