@@ -93,12 +93,12 @@ def create_draft_order():
     items = request.get_json().get("items", [])
     line_items = []
     for i in items:
-        pid = i["product_id"]
+        pid  = i["product_id"]
         price = float(i["price"])
-        vid = i["variant_id"]
-        qty = i["quantity"]
-        pct = get_discount_from_tags(pid)
-        amt = round(price * pct / 100, 2)
+        vid  = i["variant_id"]
+        qty  = i["quantity"]
+        pct  = get_discount_from_tags(pid)
+        amt  = round(price * pct / 100, 2)
         if price - amt < 0:
             amt = price - 0.01
         line_items.append(
@@ -132,7 +132,6 @@ def create_draft_order():
         verify=CA_BUNDLE,
     )
 
-    # ←— accept any 2xx and return the invoice_url
     if 200 <= resp.status_code < 300:
         invoice_url = resp.json().get("draft_order", {}).get("invoice_url")
         return jsonify({"checkout_url": invoice_url}), 200
@@ -142,15 +141,15 @@ def create_draft_order():
 
 @app.route("/create-draft-from-method", methods=["POST"])
 def create_draft_from_method():
-    data = request.get_json()
-    items = data.get("product_list", [])
-    quote_info = data.get("quote_info", [])
+    data        = request.get_json()
+    items       = data.get("product_list", [])
+    quote_info  = data.get("quote_info", [])
 
     if not items:
         return jsonify({"error": "No items received"}), 400
 
     quote_number = None
-    quote_tax = None  # track tax_info value
+    quote_tax    = None  # value from tax_info
     if quote_info and isinstance(quote_info, list):
         for q in quote_info:
             if "quote_number" in q:
@@ -158,18 +157,19 @@ def create_draft_from_method():
             if "tax_info" in q:
                 quote_tax = float(str(q["tax_info"]).replace(",", ""))
 
-    line_items = []
-    shipping_line = None
-    order_discount_total = 0.0  # accumulate negative prices here
-    tax_exempt = False  # set true if order should be non-taxable via ST or tax_info
+    line_items            = []
+    shipping_line         = None
+    order_discount_total  = 0.0
+    tax_exempt            = False    # final flag applied to draft
+    any_st_seen           = False    # track if ANY ST (ignored or not) appeared
 
     ignored_st = {"STCA", "STIN", "STNY", "STPA", "STTX", "STWA"}
 
     for it in items:
         sku_raw = it.get("sku", "").strip()
-        sku = sku_raw  # preserve original case for titles
-        qty = int(it.get("qty", 1))
-        disc = float(it.get("disc", "0").replace(",", ""))
+        sku     = sku_raw
+        qty     = int(it.get("qty", 1))
+        disc    = float(it.get("disc", "0").replace(",", ""))
 
         sku_upper = sku_raw.upper()
 
@@ -193,18 +193,17 @@ def create_draft_from_method():
 
         # ST-prefixed logic
         if sku_upper.startswith("ST"):
-            # skip specific state codes
+            any_st_seen = True
             if sku_upper in ignored_st:
-                continue
-            # any other ST → add non-taxable custom item titled SALES TAX
-            tax_exempt = True
+                continue  # ignored state codes – taxable
+            tax_exempt = True   # other ST codes → non-taxable order
             line_items.append(
                 {
-                    "title": "SALES TAX",
-                    "price": f"{disc:.2f}",
+                    "title":    "SALES TAX",
+                    "price":    f"{disc:.2f}",
                     "quantity": qty,
-                    "custom": True,
-                    "taxable": False,
+                    "custom":   True,
+                    "taxable":  False,
                 }
             )
             continue
@@ -219,44 +218,44 @@ def create_draft_from_method():
         if not info:
             line_items.append(
                 {
-                    "title": sku or "Custom Item",
-                    "price": f"{disc:.2f}",
+                    "title":    sku or "Custom Item",
+                    "price":    f"{disc:.2f}",
                     "quantity": qty,
-                    "custom": True,
+                    "custom":   True,
                 }
             )
             continue
 
-        base_price = info["price"]
-        discount_amount = round(base_price - disc, 2)
+        base_price       = info["price"]
+        discount_amount  = round(base_price - disc, 2)
         if discount_amount < 0:
             discount_amount = 0.0
 
         line_items.append(
             {
                 "variant_id": info["id"],
-                "quantity": qty,
-                "price": f"{base_price:.2f}",
+                "quantity":   qty,
+                "price":      f"{base_price:.2f}",
                 "applied_discount": {
                     "description": "GT DISCOUNT",
-                    "value_type": "fixed_amount",
-                    "value": f"{discount_amount:.2f}",
-                    "amount": f"{discount_amount:.2f}",
+                    "value_type":  "fixed_amount",
+                    "value":       f"{discount_amount:.2f}",
+                    "amount":      f"{discount_amount:.2f}",
                 },
             }
         )
 
-    if not tax_exempt and quote_tax is not None:
-        # apply tax_info rule only if no ST triggered non-taxable
+    # Apply tax_info fallback only if NO ST of any kind present
+    if (not any_st_seen) and (quote_tax is not None):
         if quote_tax == 0:
             tax_exempt = True
-        # if quote_tax > 0, leave tax_exempt False
+        # quote_tax > 0 keeps tax_exempt False
 
     if not line_items and not shipping_line:
         return jsonify({"error": "No valid variants found"}), 400
 
     draft_body = {
-        "line_items": line_items,
+        "line_items":                    line_items,
         "use_customer_default_address": True,
     }
     if shipping_line:
@@ -264,12 +263,12 @@ def create_draft_from_method():
     if order_discount_total > 0:
         draft_body["applied_discount"] = {
             "description": "GT Discount",
-            "value_type": "fixed_amount",
-            "value": f"{order_discount_total:.2f}",
-            "amount": f"{order_discount_total:.2f}",
+            "value_type":  "fixed_amount",
+            "value":       f"{order_discount_total:.2f}",
+            "amount":      f"{order_discount_total:.2f}",
         }
     if tax_exempt:
-        draft_body["tax_exempt"] = True  # mark entire draft as non-taxable
+        draft_body["tax_exempt"] = True
 
     payload = {"draft_order": draft_body}
     headers = {
@@ -283,7 +282,6 @@ def create_draft_from_method():
         verify=CA_BUNDLE,
     )
 
-    # ←— accept any 2xx and return the invoice_url
     if 200 <= resp.status_code < 300:
         invoice_url = resp.json().get("draft_order", {}).get("invoice_url")
         return jsonify({"checkout_url": invoice_url}), 200
