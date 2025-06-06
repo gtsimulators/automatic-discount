@@ -30,7 +30,7 @@ API_VERSION    = "2024-01"
 ALERT_EMAIL    = "fp@gtsimulators.com"
 SENDER_EMAIL   = "nandobentzen@gmail.com"
 ALERT_PASSWORD = os.getenv("PASS")
-ZAPIER_WEBHOOK = "https://hooks.zapier.com/hooks/catch/21531200/2w0huul/"
+ZAPIER_WEBHOOK = os.getenv("ZAPIER_WEBHOOK")
 
 
 def send_alert_email(subject, body):
