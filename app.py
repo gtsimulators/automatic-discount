@@ -5,6 +5,7 @@ from flask_cors import CORS
 import requests
 import re
 import smtplib
+from datetime import datetime
 from email.message import EmailMessage
 
 # Determine which CA bundle to use: environment override or system default
@@ -21,6 +22,9 @@ API_VERSION    = "2024-01"
 ALERT_EMAIL    = "fp@gtsimulators.com"
 SENDER_EMAIL   = "nandobentzen@gmail.com"
 ALERT_PASSWORD = os.getenv("PASS")
+RECAPTCHA_SECRET = "6Lek1UAUAAAAANKtz1pIkM0UpSRhtClJHD_gEyrt"
+ZAPIER_WEBHOOK = "https://hooks.zapier.com/hooks/catch/21531200/2w0huul/"
+
 
 def send_alert_email(subject, body):
     msg = EmailMessage()
@@ -87,6 +91,84 @@ def fetch_variant_info(sku: str):
     gid = node["id"]  # e.g. "gid://shopify/ProductVariant/1234567890"
     vid = int(gid.rsplit("/", 1)[-1])
     return {"id": vid, "price": float(node["price"])}
+
+
+
+
+
+@app.route("/submit-quote", methods=["POST"])
+def submit_quote():
+    """
+    1) Expect JSON containing at least:
+       {
+         "recaptcha_token": "<token from client>",
+         "product_list": [...],
+         "customer_info": [...]
+       }
+    2) Verify recaptcha_token with Google
+    3) If valid, forward minimal payload to Zapier webhook
+    4) Return 200 or 400/500 accordingly
+    """
+    data = request.get_json() or {}
+
+    token = data.get("recaptcha_token", "").strip()
+    product_list  = data.get("product_list", [])
+    customer_info = data.get("customer_info", [])
+
+    if not token:
+        return jsonify({"error": "No reCAPTCHA token provided"}), 400
+
+    # 1. Verify token with Google
+    verify_resp = requests.post(
+        "https://www.google.com/recaptcha/api/siteverify",
+        data = {
+            "secret": RECAPTCHA_SECRET,
+            "response": token
+        },
+        verify = CA_BUNDLE
+    )
+    if verify_resp.status_code != 200:
+        return jsonify({"error": "reCAPTCHA verification request failed"}), 502
+
+    verify_json = verify_resp.json()
+    if not verify_json.get("success", False):
+        # Optionally inspect verify_json.get("score") or "action" if using v3
+        return jsonify({"error": "reCAPTCHA verification failed"}), 400
+
+    # 2. Build minimal payload for Zapier
+    #    Only include the fields Zapier actually needs—do not forward recaptcha_token or anything else
+    payload_to_zapier = {
+        "product_list":  product_list,
+        "customer_info": customer_info,
+        "created_at":    datetime.utcnow().isoformat()
+    }
+
+    # 3. Send to Zapier
+    try:
+        zap_resp = requests.post(
+            ZAPIER_WEBHOOK,
+            headers = {"Content-Type": "text/plain;charset=UTF-8"},
+            data = requests.utils.json.dumps(payload_to_zapier),
+            verify = CA_BUNDLE
+        )
+        if zap_resp.status_code < 200 or zap_resp.status_code >= 300:
+            # If Zapier returns non-2xx, log and return 502 to client
+            send_alert_email(
+                "⚠️ Zapier webhook failed",
+                f"Status: {zap_resp.status_code}\nResponse: {zap_resp.text}"
+            )
+            return jsonify({"error": "Failed to send data to Zapier"}), 502
+
+    except Exception as e:
+        print("Exception while calling Zapier:", e, flush=True)
+        return jsonify({"error": "Internal server error"}), 500
+
+    # 4. All done, return success
+    return jsonify({"success": True}), 200
+
+
+
+
 
 @app.route("/create-draft", methods=["POST"])
 def create_draft_order():
