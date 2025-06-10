@@ -138,10 +138,7 @@ def submit_quote():
         # 1. Verify recaptcha_token
         verify_resp = requests.post(
             "https://www.google.com/recaptcha/api/siteverify",
-            data={
-                "secret":   RECAPTCHA_SECRET,
-                "response": token
-            },
+            data={"secret": RECAPTCHA_SECRET, "response": token},
             verify=CA_BUNDLE
         )
         if verify_resp.status_code != 200:
@@ -165,7 +162,7 @@ def submit_quote():
                 {
                     "attachment": base64.b64encode(f.read()).decode(),
                     "filename":   f.filename,
-                    "mimeType":   f.content_type
+                    "contentType": f.content_type
                 }
                 for f in uploaded_files
             ]
@@ -180,17 +177,22 @@ def submit_quote():
             verify=CA_BUNDLE,
         )
         gql_json = gql_resp.json()
-        user_errors = (
-            gql_json.get("data", {})
-                    .get("fileCreate", {})
-                    .get("userErrors")
-        )
+
+        # handle transport-level GraphQL errors
+        if "errors" in gql_json:
+            raise Exception(f"GraphQL transport errors: {gql_json['errors']}")
+
+        fc = gql_json.get("data", {}).get("fileCreate")
+        if fc is None:
+            raise Exception("Missing 'data.fileCreate' in GraphQL response")
+
+        # handle mutation-level userErrors
+        user_errors = fc.get("userErrors")
         if user_errors:
-            raise Exception(f"Shopify fileCreate errors: {user_errors}")
-        file_urls = [
-            f["publicUrl"]
-            for f in gql_json["data"]["fileCreate"]["files"]
-        ]
+            raise Exception(f"Shopify fileCreate userErrors: {user_errors}")
+
+        # collect public URLs
+        file_urls = [f["publicUrl"] for f in fc.get("files", [])]
         print("Uploaded file URLs:", file_urls, flush=True)
 
         # 3. Build Zapier payload
@@ -208,7 +210,7 @@ def submit_quote():
             data=json.dumps(payload_to_zapier),
             verify=CA_BUNDLE
         )
-        if zap_resp.status_code < 200 or zap_resp.status_code >= 300:
+        if not (200 <= zap_resp.status_code < 300):
             send_alert_email(
                 "⚠️ Zapier webhook failed",
                 f"Status: {zap_resp.status_code}\nResponse: {zap_resp.text}"
