@@ -168,7 +168,9 @@ def submit_quote():
                 json={
                     "file": {
                         "attachment": attachment,
-                        "filename": f.filename
+                        "filename": f.filename,
+                        "content_type": f.content_type,
+                        "public": True
                     }
                 },
                 verify=CA_BUNDLE,
