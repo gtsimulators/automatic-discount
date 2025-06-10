@@ -113,12 +113,12 @@ def submit_quote():
          - payload (JSON string with recaptcha_token, product_list, customer_info)
          - files (any number of uploaded files)
     2) Verifies recaptcha_token with Google
-    3) Uploads files via Shopify GraphQL fileCreate
+    3) Uploads files via Shopify GraphQL fileCreate (two-step: create then fetch URL)
     4) Forwards product_list, customer_info, created_at, and file_urls to Zapier
     5) Returns {"success": True} or an error JSON
     """
     try:
-        # parse incoming payload + files
+        # Parse incoming payload + files
         if request.content_type.startswith("multipart/form-data"):
             data = json.loads(request.form.get("payload", "{}"))
             uploaded_files = request.files.getlist("files")
@@ -127,7 +127,7 @@ def submit_quote():
             uploaded_files = []
         print("Received files:", [f.filename for f in uploaded_files], flush=True)
 
-        # extract common fields
+        # Extract common fields
         token         = data.get("recaptcha_token", "").strip()
         product_list  = data.get("product_list", [])
         customer_info = data.get("customer_info", [])
@@ -135,7 +135,7 @@ def submit_quote():
         if not token:
             return jsonify({"error": "No reCAPTCHA token provided"}), 400
 
-        # 1. Verify recaptcha_token
+        # 1. Verify reCAPTCHA
         verify_resp = requests.post(
             "https://www.google.com/recaptcha/api/siteverify",
             data={"secret": RECAPTCHA_SECRET, "response": token},
@@ -148,11 +148,11 @@ def submit_quote():
         if not verify_json.get("success", False):
             return jsonify({"error": "reCAPTCHA verification failed"}), 400
 
-        # 2. Upload files via Shopify GraphQL fileCreate
+        # 2a. fileCreate mutation → get IDs
         graph_query = """
         mutation fileCreate($files: [FileCreateInput!]!) {
           fileCreate(files: $files) {
-            files { publicUrl }
+            files { id }
             userErrors { field message }
           }
         }
@@ -177,22 +177,41 @@ def submit_quote():
             verify=CA_BUNDLE,
         )
         gql_json = gql_resp.json()
-
-        # handle transport-level GraphQL errors
         if "errors" in gql_json:
             raise Exception(f"GraphQL transport errors: {gql_json['errors']}")
+        fc = gql_json["data"]["fileCreate"]
+        if fc["userErrors"]:
+            raise Exception(f"Shopify fileCreate errors: {fc['userErrors']}")
+        ids = [f["id"] for f in fc["files"]]
 
-        fc = gql_json.get("data", {}).get("fileCreate")
-        if fc is None:
-            raise Exception("Missing 'data.fileCreate' in GraphQL response")
+        # 2b. node(id) queries → fetch URLs
+        file_urls = []
+        node_query = """
+        query fetchFileUrl($id: ID!) {
+          node(id: $id) {
+            ... on MediaImage { image { url } }
+            ... on GenericFile { preview { url } }
+            ... on Video      { preview { url } }
+          }
+        }
+        """
+        for fid in ids:
+            node_resp = requests.post(
+                f"https://{SHOP_NAME}/admin/api/{API_VERSION}/graphql.json",
+                headers={
+                    "X-Shopify-Access-Token": ACCESS_TOKEN,
+                    "Content-Type":          "application/json",
+                },
+                json={"query": node_query, "variables": {"id": fid}},
+                verify=CA_BUNDLE,
+            )
+            node_json = node_resp.json()
+            if "errors" in node_json:
+                raise Exception(f"GraphQL node errors: {node_json['errors']}")
+            node = node_json["data"]["node"]
+            url = node.get("image", {}).get("url") or node.get("preview", {}).get("url")
+            file_urls.append(url)
 
-        # handle mutation-level userErrors
-        user_errors = fc.get("userErrors")
-        if user_errors:
-            raise Exception(f"Shopify fileCreate userErrors: {user_errors}")
-
-        # collect public URLs
-        file_urls = [f["publicUrl"] for f in fc.get("files", [])]
         print("Uploaded file URLs:", file_urls, flush=True)
 
         # 3. Build Zapier payload
