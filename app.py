@@ -121,16 +121,13 @@ def submit_quote():
     """
     try:
         if request.content_type.startswith("multipart/form-data"):
-
             data = json.loads(request.form.get("payload", "{}"))
-
             uploaded_files = request.files.getlist("files")
-
         else:
-
             data = request.get_json() or {}
-
             uploaded_files = []
+        print("Received files:", [f.filename for f in uploaded_files], flush=True)
+
 
         token         = data.get("recaptcha_token", "").strip()
         product_list  = data.get("product_list", [])
@@ -176,6 +173,7 @@ def submit_quote():
                 },
                 verify=CA_BUNDLE,
             )
+            print(f"Shopify Files API: status={shopify_res.status_code}, body={shopify_res.text}", flush=True)
             shopify_res.raise_for_status()
             file_urls.append(shopify_res.json()["file"]["public_url"])
 
