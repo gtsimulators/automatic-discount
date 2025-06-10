@@ -115,9 +115,10 @@ def submit_quote():
     2) Verifies recaptcha_token with Google
     3) Runs stagedUploadsCreate to get upload targets
     4) PUTs each file to its target URL
-    5) Calls fileCreate to register each uploaded file
-    6) Forwards product_list, customer_info, created_at, and file_urls to Zapier
-    7) Returns {"success": True} or an error JSON
+    5) Calls fileCreate to register each uploaded file and returns its ID
+    6) Polls until each fileStatus == READY and grabs the final publicUrl
+    7) Forwards product_list, customer_info, created_at, and file_urls to Zapier
+    8) Returns {"success": True} or an error JSON
     """
     try:
         # 1. Parse incoming payload + files
@@ -136,8 +137,8 @@ def submit_quote():
 
         verify_resp = requests.post(
             "https://www.google.com/recaptcha/api/siteverify",
-            data = {"secret": RECAPTCHA_SECRET, "response": token},
-            verify = CA_BUNDLE
+            data={"secret": RECAPTCHA_SECRET, "response": token},
+            verify=CA_BUNDLE
         )
         verify_resp.raise_for_status()
         verify_json = verify_resp.json()
@@ -159,10 +160,10 @@ def submit_quote():
             for f in uploaded_files:
                 content = f.read()
                 upload_inputs.append({
-                    "filename":   f.filename,
-                    "mimeType":   f.content_type,
-                    "fileSize":   len(content),
-                    "resource":   "FILE",
+                    "filename": f.filename,
+                    "mimeType": f.content_type,
+                    "fileSize": len(content),
+                    "resource": "FILE",
                 })
 
             staged_query = """
@@ -185,7 +186,6 @@ def submit_quote():
                 verify=CA_BUNDLE,
             )
             staged_json = staged_resp.json()
-            # Check for errors
             se = staged_json.get("data", {}).get("stagedUploadsCreate", {}).get("userErrors")
             if se:
                 raise Exception(f"stagedUploadsCreate userErrors: {se}")
@@ -195,28 +195,30 @@ def submit_quote():
             # 4. PUT each file to its target
             for f, tgt in zip(uploaded_files, targets):
                 f.seek(0)
-                # Build form data for file upload
-                files = {p["name"]: p["value"] for p in tgt["parameters"]}
+                params = {p["name"]: p["value"] for p in tgt["parameters"]}
                 upload_resp = requests.put(
                     tgt["url"],
-                    data = f.read(),
-                    headers = {"Content-Type": f.content_type},
-                    params = files,
+                    data=f.read(),
+                    headers={"Content-Type": f.content_type},
+                    params=params,
                 )
                 upload_resp.raise_for_status()
 
-                # 5. Call fileCreate to register and get publicUrl
+                # 5. Call fileCreate to register and get back the new file’s ID
                 file_create_query = """
                 mutation fileCreate($files: [FileCreateInput!]!) {
                   fileCreate(files: $files) {
-                    files { publicUrl }
+                    files {
+                      ... on GenericFile { id }
+                      ... on MediaImage  { id }
+                    }
                     userErrors { field message }
                   }
                 }
                 """
                 fc_vars = {
                   "files": [
-                    { "originalSource": tgt["resourceUrl"], "contentType": "FILE" }
+                    {"originalSource": tgt["resourceUrl"], "contentType": "FILE"}
                   ]
                 }
                 fc_resp = requests.post(
@@ -229,10 +231,40 @@ def submit_quote():
                 fe = fc_json.get("data", {}).get("fileCreate", {}).get("userErrors")
                 if fe:
                     raise Exception(f"fileCreate userErrors: {fe}")
-                urls = fc_json["data"]["fileCreate"]["files"]
-                file_urls.extend(u["publicUrl"] for u in urls)
 
-        # 6. Build Zapier payload
+                # Extract the Shopify GID and the numeric ID
+                file_gid = fc_json["data"]["fileCreate"]["files"][0]["id"]
+                # 6. Poll until the file is READY
+                status_query = """
+                query getFile($id: ID!) {
+                  node(id: $id) {
+                    ... on GenericFile {
+                      fileStatus
+                    }
+                    ... on MediaImage {
+                      fileStatus
+                      image { url }
+                    }
+                  }
+                }
+                """
+                file_url = None
+                while True:
+                    stat_resp = requests.post(
+                        gql_endpoint,
+                        headers=headers,
+                        json={"query": status_query, "variables": {"id": file_gid}},
+                        verify=CA_BUNDLE,
+                    )
+                    node = stat_resp.json().get("data", {}).get("node", {})
+                    if node.get("fileStatus") == "READY":
+                        file_url = node.get("image", {}).get("url")
+                        break
+                    time.sleep(1)
+
+                file_urls.append(file_url)
+
+        # 7. Build Zapier payload
         payload_to_zapier = {
             "product_list":  data.get("product_list", []),
             "customer_info": data.get("customer_info", []),
@@ -240,7 +272,7 @@ def submit_quote():
             "file_urls":     file_urls
         }
 
-        # 7. Send to Zapier
+        # 8. Send to Zapier
         zap_resp = requests.post(
             ZAPIER_WEBHOOK,
             headers={"Content-Type": "text/plain;charset=UTF-8"},
