@@ -8,6 +8,9 @@ import json
 import smtplib
 from datetime import datetime
 from email.message import EmailMessage
+import base64
+import traceback
+
 
 # Determine which CA bundle to use: environment override or system default
 _default_ca = os.getenv("REQUESTS_CA_BUNDLE", None)
@@ -117,7 +120,17 @@ def submit_quote():
     4) Return 200 or 400/500 accordingly
     """
     try:
-        data = request.get_json() or {}
+        if request.content_type.startswith("multipart/form-data"):
+
+            data = json.loads(request.form.get("payload", "{}"))
+
+            uploaded_files = request.files.getlist("files")
+
+        else:
+
+            data = request.get_json() or {}
+
+            uploaded_files = []
 
         token         = data.get("recaptcha_token", "").strip()
         product_list  = data.get("product_list", [])
@@ -145,11 +158,34 @@ def submit_quote():
             # Optionally inspect verify_json.get("score") or "action" if using v3
             return jsonify({"error": "reCAPTCHA verification failed"}), 400
 
+
+        file_urls = []
+        for f in uploaded_files:
+            attachment = base64.b64encode(f.read()).decode()
+            shopify_res = requests.post(
+                f"https://{SHOP_NAME}/admin/api/{API_VERSION}/files.json",
+                headers={
+                    "X-Shopify-Access-Token": ACCESS_TOKEN,
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "file": {
+                        "attachment": attachment,
+                        "filename": f.filename
+                    }
+                },
+                verify=CA_BUNDLE,
+            )
+            shopify_res.raise_for_status()
+            file_urls.append(shopify_res.json()["file"]["public_url"])
+
+
         # 2. Build minimal payload for Zapier
         payload_to_zapier = {
             "product_list":  product_list,
             "customer_info": customer_info,
-            "created_at":    datetime.utcnow().isoformat()
+            "created_at":    datetime.utcnow().isoformat(),
+            "file_urls":     file_urls
         }
 
         # 3. Send to Zapier
