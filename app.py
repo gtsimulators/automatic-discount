@@ -29,7 +29,7 @@ CORS(app)
 SHOP_NAME      = "gtsimulators-by-global-technologies.myshopify.com"
 ACCESS_TOKEN   = os.getenv("SHOPIFY_TOKEN")
 RECAPTCHA_SECRET = os.getenv("RECAPTCHA_SECRET")
-API_VERSION    = "2024-01"
+API_VERSION    = "2025-01"
 ALERT_EMAIL    = "fp@gtsimulators.com"
 SENDER_EMAIL   = "nandobentzen@gmail.com"
 ALERT_PASSWORD = os.getenv("PASS")
@@ -169,7 +169,7 @@ def submit_quote():
                     "file": {
                         "attachment": attachment,
                         "filename": f.filename,
-                        "content_type": f.content_type,
+                        "mime_type": f.content_type,
                         "public": True
                     }
                 },
