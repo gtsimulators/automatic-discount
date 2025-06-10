@@ -109,16 +109,17 @@ def fetch_variant_info(sku: str):
 @app.route("/submit-quote", methods=["POST"])
 def submit_quote():
     """
-    1) Accepts multipart/form-data containing:
-         - payload (JSON string with recaptcha_token, product_list, customer_info)
-         - files (any number of uploaded files)
-    2) Verifies recaptcha_token with Google
-    3) Uploads files via Shopify GraphQL fileCreate
-    4) Forwards product_list, customer_info, created_at, and file_urls to Zapier
-    5) Returns {"success": True} or an error JSON
+    1) Expect JSON containing at least:
+       {
+         "recaptcha_token": "<token from client>",
+         "product_list": [...],
+         "customer_info": [...]
+       }
+    2) Verify recaptcha_token with Google
+    3) If valid, forward minimal payload to Zapier webhook
+    4) Return 200 or 400/500 accordingly
     """
     try:
-        # parse incoming payload + files
         if request.content_type.startswith("multipart/form-data"):
             data = json.loads(request.form.get("payload", "{}"))
             uploaded_files = request.files.getlist("files")
@@ -127,7 +128,7 @@ def submit_quote():
             uploaded_files = []
         print("Received files:", [f.filename for f in uploaded_files], flush=True)
 
-        # extract common fields
+
         token         = data.get("recaptcha_token", "").strip()
         product_list  = data.get("product_list", [])
         customer_info = data.get("customer_info", [])
@@ -135,61 +136,51 @@ def submit_quote():
         if not token:
             return jsonify({"error": "No reCAPTCHA token provided"}), 400
 
-        # 1. Verify recaptcha_token
+        # 1. Verify token with Google
         verify_resp = requests.post(
             "https://www.google.com/recaptcha/api/siteverify",
-            data={
+            data = {
                 "secret":   RECAPTCHA_SECRET,
                 "response": token
             },
-            verify=CA_BUNDLE
+            verify = CA_BUNDLE
         )
         if verify_resp.status_code != 200:
             return jsonify({"error": "reCAPTCHA verification request failed"}), 502
+
         verify_json = verify_resp.json()
         print("reCAPTCHA response:", verify_json, flush=True)
+
         if not verify_json.get("success", False):
+            # Optionally inspect verify_json.get("score") or "action" if using v3
             return jsonify({"error": "reCAPTCHA verification failed"}), 400
 
-        # 2. Upload files via GraphQL fileCreate
-        graph_query = """
-        mutation fileCreate($files: [FileCreateInput!]!) {
-          fileCreate(files: $files) {
-            files { publicUrl }
-            userErrors { field message }
-          }
-        }
-        """
-        graph_vars = {
-            "files": [
-                {
-                    "attachment": base64.b64encode(f.read()).decode(),
-                    "filename":   f.filename,
-                    "mimeType":   f.content_type
-                }
-                for f in uploaded_files
-            ]
-        }
-        gql_resp = requests.post(
-            f"https://{SHOP_NAME}/admin/api/{API_VERSION}/graphql.json",
-            headers={
-                "X-Shopify-Access-Token": ACCESS_TOKEN,
-                "Content-Type":          "application/json",
-            },
-            json={"query": graph_query, "variables": graph_vars},
-            verify=CA_BUNDLE,
-        )
-        gql_json = gql_resp.json()
-        errors = gql_json.get("data", {}).get("fileCreate", {}).get("userErrors")
-        if errors:
-            raise Exception(f"Shopify fileCreate errors: {errors}")
-        file_urls = [
-            f["publicUrl"]
-            for f in gql_json["data"]["fileCreate"]["files"]
-        ]
-        print("Uploaded file URLs:", file_urls, flush=True)
 
-        # 3. Build Zapier payload
+        file_urls = []
+        for f in uploaded_files:
+            attachment = base64.b64encode(f.read()).decode()
+            shopify_res = requests.post(
+                f"https://{SHOP_NAME}/admin/api/{API_VERSION}/files.json",
+                headers={
+                    "X-Shopify-Access-Token": ACCESS_TOKEN,
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "file": {
+                        "attachment": attachment,
+                        "filename": f.filename,
+                        "content_type": f.content_type,
+                        "public": True
+                    }
+                },
+                verify=CA_BUNDLE,
+            )
+            print(f"Shopify Files API: status={shopify_res.status_code}, body={shopify_res.text}", flush=True)
+            shopify_res.raise_for_status()
+            file_urls.append(shopify_res.json()["file"]["public_url"])
+
+
+        # 2. Build minimal payload for Zapier
         payload_to_zapier = {
             "product_list":  product_list,
             "customer_info": customer_info,
@@ -197,24 +188,27 @@ def submit_quote():
             "file_urls":     file_urls
         }
 
-        # 4. Send to Zapier
+        # 3. Send to Zapier
         zap_resp = requests.post(
             ZAPIER_WEBHOOK,
-            headers={"Content-Type": "text/plain;charset=UTF-8"},
-            data=json.dumps(payload_to_zapier),
-            verify=CA_BUNDLE
+            headers = {"Content-Type": "text/plain;charset=UTF-8"},
+            data    = json.dumps(payload_to_zapier),
+            verify  = CA_BUNDLE
         )
         if zap_resp.status_code < 200 or zap_resp.status_code >= 300:
+            # If Zapier returns non-2xx, log and return 502 to client
             send_alert_email(
                 "⚠️ Zapier webhook failed",
                 f"Status: {zap_resp.status_code}\nResponse: {zap_resp.text}"
             )
             return jsonify({"error": "Failed to send data to Zapier"}), 502
 
-        # 5. Success
+        # 4. All done, return success
         return jsonify({"success": True}), 200
 
     except Exception as e:
+        # Catch ANY unexpected exception, print full stack trace to Render logs,
+        # and return a generic 500 to the client.
         traceback.print_exc()
         return jsonify({"error": "Internal server error"}), 500
 
