@@ -155,7 +155,8 @@ def submit_quote():
                 inputs.append({
                     "filename":   f.filename,
                     "mimeType":   f.content_type,
-                    "fileSize":   len(content),
+                    # fileSize must be a string! :contentReference[oaicite:0]{index=0}
+                    "fileSize":   str(len(content)),
                     "httpMethod": "PUT",
                     "resource":   "FILE"
                 })
@@ -177,17 +178,17 @@ def submit_quote():
                 verify=CA_BUNDLE
             )
             staged_json = staged_resp.json()
-            # 4. GraphQL transport errors
+            # GraphQL transport errors
             if staged_json.get("errors"):
                 raise Exception(f"GraphQL errors: {staged_json['errors']}")
-            # 5. Mutation-level userErrors
+            # Mutation-level userErrors
             se = staged_json["data"]["stagedUploadsCreate"]["userErrors"]
             if se:
                 raise Exception(f"stagedUploadsCreate errors: {se}")
 
             targets = staged_json["data"]["stagedUploadsCreate"]["stagedTargets"]
 
-            # 6. Upload each file via HTTP PUT
+            # 4. Upload each file via HTTP PUT
             for f, tgt in zip(uploaded_files, targets):
                 f.seek(0)
                 params = {p["name"]: p["value"] for p in tgt["parameters"]}
@@ -199,7 +200,7 @@ def submit_quote():
                 )
                 up_resp.raise_for_status()
 
-                # 7a. Register with fileCreate mutation
+                # 5a. Register with fileCreate mutation
                 file_create_query = """
                 mutation fileCreate($files: [FileCreateInput!]!) {
                   fileCreate(files: $files) {
@@ -221,13 +222,13 @@ def submit_quote():
                     json={"query": file_create_query, "variables": fc_vars},
                     verify=CA_BUNDLE
                 ).json()
-                # 7b. fileCreate userErrors
+                # fileCreate userErrors
                 fe = fc_resp["data"]["fileCreate"]["userErrors"]
                 if fe:
                     raise Exception(f"fileCreate errors: {fe}")
                 file_id = fc_resp["data"]["fileCreate"]["files"][0]["id"]
 
-                # 7c. Query node for publicUrl
+                # 5b. Query node for publicUrl
                 node_query = """
                 query getFileUrl($id: ID!) {
                   node(id: $id) {
@@ -242,11 +243,10 @@ def submit_quote():
                     json={"query": node_query, "variables": {"id": file_id}},
                     verify=CA_BUNDLE
                 ).json()
-                # 7d. Extract publicUrl
                 pu = node_resp["data"]["node"]["publicUrl"]
                 file_urls.append(pu)
 
-        # 8. Build and send Zapier payload
+        # 6. Build & send Zapier payload
         payload_to_zapier = {
             "product_list":  data.get("product_list", []),
             "customer_info": data.get("customer_info", []),
