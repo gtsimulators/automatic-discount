@@ -110,24 +110,26 @@ def fetch_variant_info(sku: str):
 def submit_quote():
     """
     1) Accepts multipart/form-data:
-         - payload: JSON string with recaptcha_token, product_list, customer_info
-         - files: any number of uploaded files
-    2) Verifies reCAPTCHA token
+         - payload: JSON with recaptcha_token, product_list, customer_info
+         - files: any uploaded files
+    2) Verifies reCAPTCHA
     3) stagedUploadsCreate → get signed upload targets
-    4) POST each file as form-data to its target URL
-    5) fileCreate → register file, then poll node() for publicUrl
-    6) Send assembled payload to Zapier
-    7) Return {"success": True} or an error JSON
+    4) Uploads each file (POST multipart/form-data)
+    5) fileCreate → register each upload
+    6) Polls node(id: ) until fileStatus=READY, extracting the correct URL field
+    7) Sends product_list, customer_info, created_at, and file_urls to Zapier
     """
     try:
-        # 1. Parse incoming payload + files
+        # 1. Parse payload + files
         if request.content_type.startswith("multipart/form-data"):
             data = json.loads(request.form.get("payload", "{}"))
             uploaded_files = request.files.getlist("files")
         else:
-            data, uploaded_files = request.get_json() or {}, []
+            data = request.get_json() or {}
+            uploaded_files = []
+        print("Received files:", [f.filename for f in uploaded_files], flush=True)
 
-        # 2. Verify reCAPTCHA token
+        # 2. Verify reCAPTCHA
         token = data.get("recaptcha_token", "").strip()
         if not token:
             return jsonify({"error": "No reCAPTCHA token provided"}), 400
@@ -137,28 +139,19 @@ def submit_quote():
             verify=CA_BUNDLE
         )
         rc.raise_for_status()
-        if not rc.json().get("success", False):
+        if not rc.json().get("success"):
             return jsonify({"error": "reCAPTCHA verification failed"}), 400
 
         file_urls = []
+
         if uploaded_files:
-            gql_endpoint = f"https://{SHOP_NAME}/admin/api/{API_VERSION}/graphql.json"
+            gql_ep = f"https://{SHOP_NAME}/admin/api/{API_VERSION}/graphql.json"
             headers = {
                 "X-Shopify-Access-Token": ACCESS_TOKEN,
                 "Content-Type": "application/json",
             }
 
-            # 3. stagedUploadsCreate → get signed upload targets
-            inputs = []
-            for f in uploaded_files:
-                content = f.read()
-                inputs.append({
-                    "filename":   f.filename,
-                    "mimeType":   f.content_type,
-                    "fileSize":   str(len(content)),       # fileSize must be a string :contentReference[oaicite:4]{index=4}
-                    "httpMethod": "POST",                 # include httpMethod for POST uploads :contentReference[oaicite:5]{index=5}
-                    "resource":   "FILE"
-                })
+            # 3. stagedUploadsCreate → get signed targets
             staged_query = """
             mutation stagedUploadsCreate($input: [StagedUploadInput!]!) {
               stagedUploadsCreate(input: $input) {
@@ -171,37 +164,41 @@ def submit_quote():
               }
             }
             """
-            staged_resp = requests.post(
-                gql_endpoint, headers=headers,
+            inputs = []
+            for f in uploaded_files:
+                content = f.read()
+                inputs.append({
+                    "filename":   f.filename,
+                    "mimeType":   f.content_type,
+                    "fileSize":   len(content),
+                    "httpMethod": "POST",
+                    "resource":   "FILE"
+                })
+            resp1 = requests.post(
+                gql_ep, headers=headers,
                 json={"query": staged_query, "variables": {"input": inputs}},
                 verify=CA_BUNDLE
-            ).json()
-            # transport-level errors
-            if staged_resp.get("errors"):
-                raise Exception(f"GraphQL errors: {staged_resp['errors']}")
-            # mutation-level userErrors
-            ue = staged_resp["data"]["stagedUploadsCreate"]["userErrors"]
+            )
+            resp1.raise_for_status()
+            data1 = resp1.json()
+            ue = data1["data"]["stagedUploadsCreate"]["userErrors"]
             if ue:
                 raise Exception(f"stagedUploadsCreate errors: {ue}")
-            targets = staged_resp["data"]["stagedUploadsCreate"]["stagedTargets"]
+            targets = data1["data"]["stagedUploadsCreate"]["stagedTargets"]
 
-            # 4. POST each file as multipart/form-data
+            # 4. Upload each file (multipart/form-data POST)
             for f, tgt in zip(uploaded_files, targets):
                 f.seek(0)
-                form_fields = {p["name"]: p["value"] for p in tgt["parameters"]}
-                files = {"file": (f.filename, f.read(), f.content_type)}
-                up_resp = requests.post(
-                    tgt["url"],
-                    data=form_fields,                # form parameters first :contentReference[oaicite:6]{index=6}
-                    files=files                       # then the file field :contentReference[oaicite:7]{index=7}
-                )
-                up_resp.raise_for_status()
+                fields = {p["name"]: p["value"] for p in tgt["parameters"]}
+                files  = {"file": (f.filename, f.read(), f.content_type)}
+                up = requests.post(tgt["url"], data=fields, files=files)
+                up.raise_for_status()
 
-                # 5a. Register with fileCreate mutation
+                # 5. Register via fileCreate
                 file_create_query = """
                 mutation fileCreate($files: [FileCreateInput!]!) {
                   fileCreate(files: $files) {
-                    files { id }
+                    files { id fileStatus }
                     userErrors { field message }
                   }
                 }
@@ -212,53 +209,79 @@ def submit_quote():
                         "contentType":    "FILE"
                     }]
                 }
-                fc_resp = requests.post(
-                    gql_endpoint, headers=headers,
+                resp2 = requests.post(
+                    gql_ep, headers=headers,
                     json={"query": file_create_query, "variables": fc_vars},
                     verify=CA_BUNDLE
-                ).json()
-                # check fileCreate userErrors
-                fe = fc_resp["data"]["fileCreate"]["userErrors"]
-                if fe:
-                    raise Exception(f"fileCreate errors: {fe}")
-                file_id = fc_resp["data"]["fileCreate"]["files"][0]["id"]
+                )
+                resp2.raise_for_status()
+                data2 = resp2.json()
+                ue2 = data2["data"]["fileCreate"]["userErrors"]
+                if ue2:
+                    raise Exception(f"fileCreate errors: {ue2}")
+                file_node = data2["data"]["fileCreate"]["files"][0]
+                file_id     = file_node["id"]
+                status      = file_node["fileStatus"]
 
-                # 5b. Query node() for publicUrl
-                node_query = """
-                query getFileUrl($id: ID!) {
+                # 6. Poll until READY, then extract the correct URL field
+                file_query = """
+                query getFile($id: ID!) {
                   node(id: $id) {
-                    ... on File {
-                      publicUrl
-                    }
+                    ... on GenericFile { fileStatus url }
+                    ... on MediaImage { fileStatus image { url } }
+                    ... on Video      { fileStatus originalSource { url } }
+                    ... on Model3d    { fileStatus sources { url } }
                   }
                 }
                 """
-                node_resp = requests.post(
-                    gql_endpoint, headers=headers,
-                    json={"query": node_query, "variables": {"id": file_id}},
-                    verify=CA_BUNDLE
-                ).json()
-                pu = node_resp["data"]["node"]["publicUrl"]  # extract URL :contentReference[oaicite:8]{index=8}
-                file_urls.append(pu)
+                file_url = None
+                for _ in range(20):
+                    time.sleep(1)
+                    resp3 = requests.post(
+                        gql_ep, headers=headers,
+                        json={"query": file_query, "variables": {"id": file_id}},
+                        verify=CA_BUNDLE
+                    )
+                    resp3.raise_for_status()
+                    data3 = resp3.json()
+                    node = data3["data"]["node"]
+                    if not node:
+                        continue
+                    status = node.get("fileStatus")
+                    if status == "READY":
+                        if "url" in node:
+                            file_url = node["url"]
+                        elif "image" in node and node["image"]:
+                            file_url = node["image"]["url"]
+                        elif "originalSource" in node:
+                            file_url = node["originalSource"]["url"]
+                        elif "sources" in node and node["sources"]:
+                            file_url = node["sources"][0]["url"]
+                        break
+                if not file_url:
+                    raise Exception(f"File did not become READY, status={status}")
 
-        # 6. Build & send Zapier payload
+                file_urls.append(file_url)
+
+        # 7. Send everything to Zapier
         payload_to_zapier = {
             "product_list":  data.get("product_list", []),
             "customer_info": data.get("customer_info", []),
             "created_at":    datetime.utcnow().isoformat(),
             "file_urls":     file_urls
         }
-        zap_resp = requests.post(
+        zap = requests.post(
             ZAPIER_WEBHOOK,
             headers={"Content-Type":"application/json"},
             json=payload_to_zapier,
             verify=CA_BUNDLE
         )
-        zap_resp.raise_for_status()
+        zap.raise_for_status()
 
         return jsonify({"success": True}), 200
 
     except Exception as e:
+        print(f"❌ submit_quote error: {e}", flush=True)
         traceback.print_exc()
         return jsonify({"error": "Internal server error"}), 500
 
