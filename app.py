@@ -107,154 +107,133 @@ def fetch_variant_info(sku: str):
 
 
 
-from pprint import pprint
-
+# ── REPLACE ONLY THIS ROUTE ───────────────────────────────────────────
 @app.route("/submit-quote", methods=["POST"])
 def submit_quote():
     """
-    Verbose / debug version.
-    ────────────────────────
-    1) Parse multipart request
-    2) reCAPTCHA verify
-    3) stagedUploadsCreate
-    4) POST each file (+ log full GCS response)
-    5) fileCreate  ➜ url   (use `url`, not deprecated publicUrl)
-    6) Fire payload to Zapier
+    Handles multipart quote requests + optional file uploads.
+    Uploads go through Shopify staged-upload -> Google Cloud.
+    For FILE resources we treat staged `resourceUrl` as the final
+    public link (Shopify 2023-10 change).
     """
-
     try:
-        print("\n=== /submit-quote called ==========================")
-
-        # ────────────────────────── 1. Parse request
-        ct = request.content_type or ''
-        print(f"[dbg] Content-Type → {ct}")
-        if ct.startswith("multipart/form-data"):
-            data_str = request.form.get("payload", "{}")
-            print(f"[dbg] payload raw len={len(data_str)}")
-            data = json.loads(data_str or "{}")
-            uploads = request.files.getlist("files")
+        print("\n=== /submit-quote ==========================================")
+        # ---------- 1. payload & files ----------
+        if request.content_type.startswith("multipart/form-data"):
+            payload_raw   = request.form.get("payload", "{}")
+            data          = json.loads(payload_raw or "{}")
+            uploaded      = request.files.getlist("files")
         else:
-            data = request.get_json() or {}
-            uploads = []
-        print(f"[dbg] Parsed JSON keys: {list(data.keys())}")
-        print(f"[dbg] Uploaded files: {[f.filename for f in uploads]}")
+            data, uploaded = request.get_json() or {}, []
 
-        # ────────────────────────── 2. reCAPTCHA
-        token = data.get("recaptcha_token", "")
-        print(f"[dbg] reCAPTCHA token present? {'yes' if token else 'NO!'}")
+        print("[dbg] keys:", list(data.keys()))
+        print("[dbg] files:", [f.filename for f in uploaded])
+
+        # ---------- 2. reCAPTCHA ----------
+        token = data.get("recaptcha_token")
         if not token:
-            return jsonify({"error": "missing recaptcha"}), 400
-        rc_resp = requests.post(
+            return jsonify({"error": "missing recaptcha_token"}), 400
+        rc = requests.post(
             "https://www.google.com/recaptcha/api/siteverify",
             data={"secret": RECAPTCHA_SECRET, "response": token},
             verify=CA_BUNDLE
-        )
-        print(f"[dbg] reCAPTCHA HTTP {rc_resp.status_code}")
-        pprint(rc_resp.json())
-        if not rc_resp.json().get("success"):
+        ).json()
+        print("[dbg] recaptcha:", rc)
+        if not rc.get("success"):
             return jsonify({"error": "recaptcha failed"}), 400
 
         file_urls = []
-        if uploads:
-            gql   = f"https://{SHOP_NAME}/admin/api/{API_VERSION}/graphql.json"
-            hdr   = {"X-Shopify-Access-Token": ACCESS_TOKEN,
-                     "Content-Type": "application/json"}
+        if uploaded:
+            gql = f"https://{SHOP_NAME}/admin/api/{API_VERSION}/graphql.json"
+            hdr = {
+                "X-Shopify-Access-Token": ACCESS_TOKEN,
+                "Content-Type": "application/json"
+            }
 
-            # ───────────────────── 3. stagedUploadsCreate
-            staged_inputs = []
-            for f in uploads:
-                f.seek(0, 2)
-                size = f.tell()
-                f.seek(0)
-                staged_inputs.append({
-                    "filename"  : f.filename,
-                    "mimeType"  : f.content_type,
-                    "fileSize"  : str(size),
-                    "httpMethod": "POST",
-                    "resource"  : "FILE"
-                })
-            print("[dbg] stagedUploadsCreate input[0]:")
-            pprint(staged_inputs[0])
+            # ---------- 3. stagedUploadsCreate ----------
+            inputs = [{
+                "filename"  : f.filename,
+                "mimeType"  : f.content_type,
+                "fileSize"  : str(f.seek(0, 2) or f.tell()),  # str!
+                "httpMethod": "POST",
+                "resource"  : "FILE"
+            } for f in uploaded]
+            for f in uploaded: f.seek(0)
 
             staged_q = """
-            mutation($input:[StagedUploadInput!]!){
-              stagedUploadsCreate(input:$input){
-                stagedTargets{url resourceUrl parameters{name value}}
-                userErrors{field message}
-              }
-            }"""
+              mutation($input:[StagedUploadInput!]!){
+                stagedUploadsCreate(input:$input){
+                  stagedTargets{ url resourceUrl parameters{ name value } }
+                  userErrors{ field message }
+                }
+              }"""
             sj = requests.post(gql, headers=hdr,
                                json={"query": staged_q,
-                                     "variables":{"input":staged_inputs}},
+                                     "variables":{"input":inputs}},
                                verify=CA_BUNDLE).json()
-            print("[dbg] stagedUploadsCreate raw:")
-            pprint(sj)
-            ue = sj.get("data",{}).get("stagedUploadsCreate",{}).get("userErrors")
+            if sj.get("errors"):
+                print("[dbg] staged transport errors:", sj["errors"])
+                return jsonify({"error":"stagedUploadsCreate transport"}), 500
+            ue = sj["data"]["stagedUploadsCreate"]["userErrors"]
             if ue:
-                raise Exception(f"stagedUploadsCreate userErrors: {ue}")
+                print("[dbg] staged userErrors:", ue)
+                return jsonify({"error":"stagedUploadsCreate userErrors"}), 500
             targets = sj["data"]["stagedUploadsCreate"]["stagedTargets"]
 
-            # ───────────────────── 4. POST each file
-            for f, tgt in zip(uploads, targets):
-                print(f"[dbg] Uploading {f.filename} to {tgt['url'][:60]}…")
-                params = {p["name"]: p["value"] for p in tgt["parameters"]}
-                resp = requests.post(
+            # ---------- 4. POST each file ----------
+            for f, tgt in zip(uploaded, targets):
+                fields = {p["name"]: p["value"] for p in tgt["parameters"]}
+                resp_up = requests.post(
                     tgt["url"],
-                    data=params,
+                    data=fields,
                     files={"file": (f.filename, f, f.content_type)}
                 )
-                print(f"[dbg] GCS upload status {resp.status_code}")
-                if resp.status_code >= 400:
-                    print(resp.text[:500])
-                    resp.raise_for_status()
+                print(f"[dbg] upload {f.filename} → {resp_up.status_code}")
+                resp_up.raise_for_status()
 
-                # ───────────────── 5. fileCreate
+                # ---------- 5. fileCreate ----------
                 fc_q = """
-                mutation($files:[FileCreateInput!]!){
-                  fileCreate(files:$files){
-                    files{id url}
-                    userErrors{field message}
-                  }
-                }"""
+                  mutation($files:[FileCreateInput!]!){
+                    fileCreate(files:$files){
+                      files{ id fileStatus }
+                      userErrors{ field message }
+                    }
+                  }"""
                 fc_vars = {"files":[{
                     "originalSource": tgt["resourceUrl"],
-                    "contentType": "FILE"
+                    "contentType"   : "FILE"
                 }]}
                 fc = requests.post(gql, headers=hdr,
                                    json={"query":fc_q,"variables":fc_vars},
                                    verify=CA_BUNDLE).json()
-                print("[dbg] fileCreate response:")
-                pprint(fc)
-                ue2 = fc["data"]["fileCreate"]["userErrors"]
-                if ue2:
-                    raise Exception(f"fileCreate userErrors: {ue2}")
-                file_urls.append(fc["data"]["fileCreate"]["files"][0]["url"])
+                if fc.get("errors") or fc["data"]["fileCreate"]["userErrors"]:
+                    print("[dbg] fileCreate issue:", fc)
+                    return jsonify({"error":"fileCreate failed"}), 500
 
-        # ────────────────────────── 6. Zapier call
-        payload = {
+                # Use staged resourceUrl as the public link
+                file_urls.append(tgt["resourceUrl"])
+
+        # ---------- 6. Zapier ----------
+        zap_payload = {
             "product_list" : data.get("product_list", []),
             "customer_info": data.get("customer_info", []),
             "created_at"   : datetime.utcnow().isoformat(),
             "file_urls"    : file_urls
         }
-        print("[dbg] Final payload to Zapier (truncated):")
-        pprint({**payload, "product_list":"…", "customer_info":"…"})
-
-        zr = requests.post(ZAPIER_WEBHOOK, json=payload,
+        zr = requests.post(ZAPIER_WEBHOOK, json=zap_payload,
                            headers={"Content-Type":"application/json"},
                            verify=CA_BUNDLE)
-        print(f"[dbg] Zapier HTTP {zr.status_code}")
-        if zr.status_code >= 400:
-            print(zr.text[:500])
-            zr.raise_for_status()
+        print("[dbg] zapier status:", zr.status_code)
+        zr.raise_for_status()
 
-        print("=== /submit-quote done OK ===")
-        return jsonify({"success": True}), 200
+        print("[dbg] done OK; urls:", file_urls)
+        return jsonify({"success":True}), 200
 
     except Exception as exc:
-        print("❌ submit_quote error:", exc)
+        print("❌ fatal:", exc)
         traceback.print_exc()
         return jsonify({"error":"Internal server error"}), 500
+# ───────────────────────────────────────────────────────────────────────
 
 
 
