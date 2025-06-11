@@ -110,56 +110,53 @@ def fetch_variant_info(sku: str):
 def submit_quote():
     """
     1) Accepts multipart/form-data:
-         - payload: JSON with recaptcha_token, product_list, customer_info
-         - files: any uploaded files
-    2) Verifies reCAPTCHA
-    3) Uses stagedUploadsCreate to get upload targets
-    4) PUTs each file to its target URL
-    5) Calls fileCreate to register uploads (getting publicUrl)
-    6) Sends product_list, customer_info, created_at, file_urls to Zapier
+         - payload: JSON string with recaptcha_token, product_list, customer_info
+         - files: any number of uploaded files
+    2) Verifies reCAPTCHA token
+    3) stagedUploadsCreate → get upload targets
+    4) PUT each file to its target URL
+    5) fileCreate → register file, then query node to get publicUrl
+    6) Send product_list, customer_info, created_at, and file_urls to Zapier
+    7) Return {"success": True} or error JSON
     """
     try:
         # 1. Parse payload + files
         if request.content_type.startswith("multipart/form-data"):
             data = json.loads(request.form.get("payload", "{}"))
-            uploaded_files = request.files.getlist("files")
+            uploaded = request.files.getlist("files")
         else:
-            data = request.get_json() or {}
-            uploaded_files = []
-        print("Received files:", [f.filename for f in uploaded_files], flush=True)
+            data, uploaded = request.get_json() or {}, []
 
         # 2. Verify reCAPTCHA
         token = data.get("recaptcha_token", "").strip()
         if not token:
-            return jsonify({"error": "No reCAPTCHA token provided"}), 400
-        resp = requests.post(
+            return jsonify({"error":"No reCAPTCHA token provided"}), 400
+        rc = requests.post(
             "https://www.google.com/recaptcha/api/siteverify",
             data={"secret": RECAPTCHA_SECRET, "response": token},
             verify=CA_BUNDLE
-        )
-        resp.raise_for_status()
-        if not resp.json().get("success", False):
-            return jsonify({"error": "reCAPTCHA verification failed"}), 400
+        ).json()
+        if not rc.get("success"):
+            return jsonify({"error":"reCAPTCHA failed"}), 400
 
-        # 3. stagedUploadsCreate → upload targets :contentReference[oaicite:0]{index=0}
         file_urls = []
-        if uploaded_files:
-            gql_endpoint = f"https://{SHOP_NAME}/admin/api/{API_VERSION}/graphql.json"
-            headers = {
+        if uploaded:
+            gql_ep = f"https://{SHOP_NAME}/admin/api/{API_VERSION}/graphql.json"
+            hdrs   = {
                 "X-Shopify-Access-Token": ACCESS_TOKEN,
-                "Content-Type": "application/json",
+                "Content-Type": "application/json"
             }
-            # Prepare inputs
+
+            # 3. stagedUploadsCreate
             inputs = []
-            for f in uploaded_files:
+            for f in uploaded:
                 content = f.read()
                 inputs.append({
                     "filename": f.filename,
                     "mimeType": f.content_type,
                     "fileSize": len(content),
-                    "resource": "FILE",
+                    "resource": "FILE"
                 })
-            # Mutation
             staged_query = """
             mutation stagedUploadsCreate($input: [StagedUploadInput!]!) {
               stagedUploadsCreate(input: $input) {
@@ -172,81 +169,93 @@ def submit_quote():
               }
             }
             """
-            staged_resp = requests.post(
-                gql_endpoint,
-                headers=headers,
+            resp = requests.post(
+                gql_ep, headers=hdrs,
                 json={"query": staged_query, "variables": {"input": inputs}},
-                verify=CA_BUNDLE,
-            )
-            staged_json = staged_resp.json()
-            errors = staged_json.get("data", {}) \
-                                .get("stagedUploadsCreate", {}) \
-                                .get("userErrors")
-            if errors:
-                raise Exception(f"stagedUploadsCreate userErrors: {errors}")
-            targets = staged_json["data"]["stagedUploadsCreate"]["stagedTargets"]
+                verify=CA_BUNDLE
+            ).json()
+            errs = resp.get("data",{})\
+                       .get("stagedUploadsCreate",{})\
+                       .get("userErrors")
+            if errs:
+                raise Exception(f"stagedUploadsCreate errors: {errs}")
+            targets = resp["data"]["stagedUploadsCreate"]["stagedTargets"]
 
-            # 4. PUT files :contentReference[oaicite:1]{index=1}
-            for f, tgt in zip(uploaded_files, targets):
+            # 4. Upload each file
+            for f, tgt in zip(uploaded, targets):
                 f.seek(0)
                 params = {p["name"]: p["value"] for p in tgt["parameters"]}
-                upload_resp = requests.put(
+                up = requests.put(
                     tgt["url"],
                     data=f.read(),
-                    headers={"Content-Type": f.content_type},
                     params=params,
+                    headers={"Content-Type": f.content_type}
                 )
-                upload_resp.raise_for_status()
+                up.raise_for_status()
 
-                # 5. fileCreate → get publicUrl :contentReference[oaicite:2]{index=2}
-                file_create_query = """
+                # 5a. Register via fileCreate
+                file_create = """
                 mutation fileCreate($files: [FileCreateInput!]!) {
                   fileCreate(files: $files) {
-                    files { publicUrl }
+                    files { id }
                     userErrors { field message }
                   }
                 }
                 """
-                fc_vars = {
-                  "files": [
-                    { "originalSource": tgt["resourceUrl"], "contentType": "FILE" }
-                  ]
-                }
-                fc_resp = requests.post(
-                    gql_endpoint,
-                    headers=headers,
-                    json={"query": file_create_query, "variables": fc_vars},
-                    verify=CA_BUNDLE,
-                )
-                fc_json = fc_resp.json()
-                fe = fc_json.get("data", {}) \
-                            .get("fileCreate", {}) \
-                            .get("userErrors")
+                fc_vars = {"files": [{
+                    "originalSource": tgt["resourceUrl"],
+                    "contentType":    "IMAGE"
+                }]}
+                fc = requests.post(
+                    gql_ep, headers=hdrs,
+                    json={"query": file_create, "variables": fc_vars},
+                    verify=CA_BUNDLE
+                ).json()
+                fe = fc.get("data",{})\
+                       .get("fileCreate",{})\
+                       .get("userErrors")
                 if fe:
-                    raise Exception(f"fileCreate userErrors: {fe}")
-                urls = fc_json["data"]["fileCreate"]["files"]
-                file_urls += [u["publicUrl"] for u in urls]
+                    raise Exception(f"fileCreate errors: {fe}")
+                file_id = fc["data"]["fileCreate"]["files"][0]["id"]
 
-        # 6. Send to Zapier
+                # 5b. Query node for public URL
+                node_q = """
+                query getFileUrl($id:ID!) {
+                  node(id: $id) {
+                    ... on File {
+                      publicUrl
+                    }
+                  }
+                }
+                """
+                node_resp = requests.post(
+                    gql_ep, headers=hdrs,
+                    json={"query": node_q, "variables": {"id": file_id}},
+                    verify=CA_BUNDLE
+                ).json()
+                pu = node_resp["data"]["node"]["publicUrl"]
+                file_urls.append(pu)
+
+        # 6. Build & send Zapier payload
         payload_to_zapier = {
             "product_list":  data.get("product_list", []),
             "customer_info": data.get("customer_info", []),
             "created_at":    datetime.utcnow().isoformat(),
             "file_urls":     file_urls
         }
-        zap_resp = requests.post(
+        zap = requests.post(
             ZAPIER_WEBHOOK,
-            headers={"Content-Type": "text/plain;charset=UTF-8"},
+            headers={"Content-Type":"text/plain;charset=UTF-8"},
             data=json.dumps(payload_to_zapier),
             verify=CA_BUNDLE
         )
-        zap_resp.raise_for_status()
+        zap.raise_for_status()
+
         return jsonify({"success": True}), 200
 
     except Exception as e:
-        print(f"❌ submit_quote error: {e}", flush=True)
         traceback.print_exc()
-        return jsonify({"error": "Internal server error"}), 500
+        return jsonify({"error":"Internal server error"}), 500
 
 
 
