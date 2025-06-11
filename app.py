@@ -113,11 +113,11 @@ def submit_quote():
          - payload: JSON string with recaptcha_token, product_list, customer_info
          - files: any number of uploaded files
     2) Verifies reCAPTCHA token
-    3) Calls stagedUploadsCreate to get signed upload targets
-    4) POSTs each file to its target URL
-    5) Calls fileCreate to register each file, then queries node for publicUrl
-    6) Sends assembled payload to Zapier
-    7) Returns {"success": True} or an error JSON
+    3) stagedUploadsCreate → get signed upload targets
+    4) POST each file as form-data to its target URL
+    5) fileCreate → register file, then poll node() for publicUrl
+    6) Send assembled payload to Zapier
+    7) Return {"success": True} or an error JSON
     """
     try:
         # 1. Parse incoming payload + files
@@ -142,23 +142,21 @@ def submit_quote():
 
         file_urls = []
         if uploaded_files:
-            gql_ep = f"https://{SHOP_NAME}/admin/api/{API_VERSION}/graphql.json"
+            gql_endpoint = f"https://{SHOP_NAME}/admin/api/{API_VERSION}/graphql.json"
             headers = {
                 "X-Shopify-Access-Token": ACCESS_TOKEN,
                 "Content-Type": "application/json",
             }
 
-            # 3. stagedUploadsCreate → get signed targets
+            # 3. stagedUploadsCreate → get signed upload targets
             inputs = []
             for f in uploaded_files:
                 content = f.read()
                 inputs.append({
                     "filename":   f.filename,
                     "mimeType":   f.content_type,
-                    # MUST be a string per Shopify UnsignedInt64 spec :contentReference[oaicite:2]{index=2}
-                    "fileSize":   str(len(content)),
-                    # Include POST since Shopify’s URLs require POST uploads :contentReference[oaicite:3]{index=3}
-                    "httpMethod": "POST",
+                    "fileSize":   str(len(content)),       # fileSize must be a string :contentReference[oaicite:4]{index=4}
+                    "httpMethod": "POST",                 # include httpMethod for POST uploads :contentReference[oaicite:5]{index=5}
                     "resource":   "FILE"
                 })
             staged_query = """
@@ -174,35 +172,32 @@ def submit_quote():
             }
             """
             staged_resp = requests.post(
-                gql_ep, headers=headers,
+                gql_endpoint, headers=headers,
                 json={"query": staged_query, "variables": {"input": inputs}},
                 verify=CA_BUNDLE
-            )
-            staged_json = staged_resp.json()
-            if staged_json.get("errors"):
-                # Transport‐level GraphQL errors :contentReference[oaicite:4]{index=4}
-                raise Exception(f"GraphQL errors: {staged_json['errors']}")
-            se = staged_json["data"]["stagedUploadsCreate"]["userErrors"]
-            if se:
-                # Mutation‐level errors :contentReference[oaicite:5]{index=5}
-                raise Exception(f"stagedUploadsCreate errors: {se}")
+            ).json()
+            # transport-level errors
+            if staged_resp.get("errors"):
+                raise Exception(f"GraphQL errors: {staged_resp['errors']}")
+            # mutation-level userErrors
+            ue = staged_resp["data"]["stagedUploadsCreate"]["userErrors"]
+            if ue:
+                raise Exception(f"stagedUploadsCreate errors: {ue}")
+            targets = staged_resp["data"]["stagedUploadsCreate"]["stagedTargets"]
 
-            targets = staged_json["data"]["stagedUploadsCreate"]["stagedTargets"]
-
-            # 4. POST each file to its target URL
+            # 4. POST each file as multipart/form-data
             for f, tgt in zip(uploaded_files, targets):
                 f.seek(0)
-                params = {p["name"]: p["value"] for p in tgt["parameters"]}
+                form_fields = {p["name"]: p["value"] for p in tgt["parameters"]}
+                files = {"file": (f.filename, f.read(), f.content_type)}
                 up_resp = requests.post(
                     tgt["url"],
-                    data=f.read(),
-                    params=params,
-                    headers={"Content-Type": f.content_type}
+                    data=form_fields,                # form parameters first :contentReference[oaicite:6]{index=6}
+                    files=files                       # then the file field :contentReference[oaicite:7]{index=7}
                 )
-                # Raise for HTTP-level errors :contentReference[oaicite:6]{index=6}
                 up_resp.raise_for_status()
 
-                # 5a. Register via fileCreate mutation
+                # 5a. Register with fileCreate mutation
                 file_create_query = """
                 mutation fileCreate($files: [FileCreateInput!]!) {
                   fileCreate(files: $files) {
@@ -212,24 +207,23 @@ def submit_quote():
                 }
                 """
                 fc_vars = {
-                    "files": [
-                        {
-                          "originalSource": tgt["resourceUrl"],
-                          "contentType":    "FILE"
-                        }
-                    ]
+                    "files": [{
+                        "originalSource": tgt["resourceUrl"],
+                        "contentType":    "FILE"
+                    }]
                 }
                 fc_resp = requests.post(
-                    gql_ep, headers=headers,
+                    gql_endpoint, headers=headers,
                     json={"query": file_create_query, "variables": fc_vars},
                     verify=CA_BUNDLE
                 ).json()
+                # check fileCreate userErrors
                 fe = fc_resp["data"]["fileCreate"]["userErrors"]
                 if fe:
                     raise Exception(f"fileCreate errors: {fe}")
                 file_id = fc_resp["data"]["fileCreate"]["files"][0]["id"]
 
-                # 5b. Query node for publicUrl
+                # 5b. Query node() for publicUrl
                 node_query = """
                 query getFileUrl($id: ID!) {
                   node(id: $id) {
@@ -240,14 +234,14 @@ def submit_quote():
                 }
                 """
                 node_resp = requests.post(
-                    gql_ep, headers=headers,
+                    gql_endpoint, headers=headers,
                     json={"query": node_query, "variables": {"id": file_id}},
                     verify=CA_BUNDLE
                 ).json()
-                pu = node_resp["data"]["node"]["publicUrl"]
+                pu = node_resp["data"]["node"]["publicUrl"]  # extract URL :contentReference[oaicite:8]{index=8}
                 file_urls.append(pu)
 
-        # 6. Build and send Zapier payload
+        # 6. Build & send Zapier payload
         payload_to_zapier = {
             "product_list":  data.get("product_list", []),
             "customer_info": data.get("customer_info", []),
@@ -256,7 +250,7 @@ def submit_quote():
         }
         zap_resp = requests.post(
             ZAPIER_WEBHOOK,
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type":"application/json"},
             json=payload_to_zapier,
             verify=CA_BUNDLE
         )
