@@ -10,6 +10,7 @@ from datetime import datetime
 from email.message import EmailMessage
 import base64
 import traceback
+from pprint import pprint
 
 
 # Determine which CA bundle to use: environment override or system default
@@ -106,169 +107,155 @@ def fetch_variant_info(sku: str):
 
 
 
+from pprint import pprint
+
 @app.route("/submit-quote", methods=["POST"])
 def submit_quote():
     """
-    1) Accept multipart/form-data:
-         - payload (JSON: recaptcha_token, product_list, customer_info)
-         - files[]
-    2) Verify reCAPTCHA
-    3) stagedUploadsCreate → get signed targets
-    4) POST each file as form-data to its target
-    5) fileCreate → register, then read publicUrl
-    6) Send everything to Zapier
+    Verbose / debug version.
+    ────────────────────────
+    1) Parse multipart request
+    2) reCAPTCHA verify
+    3) stagedUploadsCreate
+    4) POST each file (+ log full GCS response)
+    5) fileCreate  ➜ url   (use `url`, not deprecated publicUrl)
+    6) Fire payload to Zapier
     """
+
     try:
-        # 1. Parse payload + files
-        if request.content_type.startswith("multipart/form-data"):
-            data = json.loads(request.form.get("payload", "{}"))
-            uploaded_files = request.files.getlist("files")
+        print("\n=== /submit-quote called ==========================")
+
+        # ────────────────────────── 1. Parse request
+        ct = request.content_type or ''
+        print(f"[dbg] Content-Type → {ct}")
+        if ct.startswith("multipart/form-data"):
+            data_str = request.form.get("payload", "{}")
+            print(f"[dbg] payload raw len={len(data_str)}")
+            data = json.loads(data_str or "{}")
+            uploads = request.files.getlist("files")
         else:
             data = request.get_json() or {}
-            uploaded_files = []
-        print("Received files:", [f.filename for f in uploaded_files], flush=True)
+            uploads = []
+        print(f"[dbg] Parsed JSON keys: {list(data.keys())}")
+        print(f"[dbg] Uploaded files: {[f.filename for f in uploads]}")
 
-        # 2. Verify reCAPTCHA
-        token = data.get("recaptcha_token", "").strip()
+        # ────────────────────────── 2. reCAPTCHA
+        token = data.get("recaptcha_token", "")
+        print(f"[dbg] reCAPTCHA token present? {'yes' if token else 'NO!'}")
         if not token:
-            return jsonify({"error": "No reCAPTCHA token provided"}), 400
-        rc = requests.post(
+            return jsonify({"error": "missing recaptcha"}), 400
+        rc_resp = requests.post(
             "https://www.google.com/recaptcha/api/siteverify",
             data={"secret": RECAPTCHA_SECRET, "response": token},
             verify=CA_BUNDLE
         )
-        rc.raise_for_status()
-        if not rc.json().get("success"):
-            return jsonify({"error": "reCAPTCHA verification failed"}), 400
+        print(f"[dbg] reCAPTCHA HTTP {rc_resp.status_code}")
+        pprint(rc_resp.json())
+        if not rc_resp.json().get("success"):
+            return jsonify({"error": "recaptcha failed"}), 400
 
         file_urls = []
-        if uploaded_files:
-            gql = f"https://{SHOP_NAME}/admin/api/{API_VERSION}/graphql.json"
-            hdrs = {
-                "X-Shopify-Access-Token": ACCESS_TOKEN,
-                "Content-Type": "application/json",
-            }
+        if uploads:
+            gql   = f"https://{SHOP_NAME}/admin/api/{API_VERSION}/graphql.json"
+            hdr   = {"X-Shopify-Access-Token": ACCESS_TOKEN,
+                     "Content-Type": "application/json"}
 
-            # 3. stagedUploadsCreate
-            inputs = []
-            for f in uploaded_files:
-                raw = f.read()
-                inputs.append({
-                    "filename":   f.filename,
-                    "mimeType":   f.content_type,
-                    "fileSize":   str(len(raw)),      # string required
-                    "httpMethod": "POST",
-                    "resource":   "FILE",
-                })
-
-            staged_query = """
-            mutation stagedUploadsCreate($input: [StagedUploadInput!]!) {
-              stagedUploadsCreate(input: $input) {
-                stagedTargets {
-                  url
-                  resourceUrl
-                  parameters { name value }
-                }
-                userErrors { field message }
-              }
-            }
-            """
-            resp = requests.post(gql, headers=hdrs,
-                                 json={"query": staged_query, "variables": {"input": inputs}},
-                                 verify=CA_BUNDLE)
-            body = resp.json()
-
-            # ⚠ Transport-level GraphQL errors
-            if "errors" in body:
-                raise Exception(f"stagedUploadsCreate transport errors: {body['errors']}")
-
-            data0 = body.get("data", {}).get("stagedUploadsCreate")
-            if not data0:
-                raise Exception(f"stagedUploadsCreate missing data: {body}")
-
-            # ⚠ Mutation-level errors
-            if data0.get("userErrors"):
-                raise Exception(f"stagedUploadsCreate userErrors: {data0['userErrors']}")
-
-            targets = data0["stagedTargets"]
-
-            # 4. POST each file
-            for f, tgt in zip(uploaded_files, targets):
+            # ───────────────────── 3. stagedUploadsCreate
+            staged_inputs = []
+            for f in uploads:
+                f.seek(0, 2)
+                size = f.tell()
                 f.seek(0)
-                form_fields = {p["name"]: p["value"] for p in tgt["parameters"]}
-                files = {"file": (f.filename, f.read(), f.content_type)}
-                up = requests.post(tgt["url"], data=form_fields, files=files)
-                up.raise_for_status()
+                staged_inputs.append({
+                    "filename"  : f.filename,
+                    "mimeType"  : f.content_type,
+                    "fileSize"  : str(size),
+                    "httpMethod": "POST",
+                    "resource"  : "FILE"
+                })
+            print("[dbg] stagedUploadsCreate input[0]:")
+            pprint(staged_inputs[0])
 
-                # 5a. Register via fileCreate
-                file_create = """
-                mutation fileCreate($files: [FileCreateInput!]!) {
-                  fileCreate(files: $files) {
-                    files { id }
-                    userErrors { field message }
+            staged_q = """
+            mutation($input:[StagedUploadInput!]!){
+              stagedUploadsCreate(input:$input){
+                stagedTargets{url resourceUrl parameters{name value}}
+                userErrors{field message}
+              }
+            }"""
+            sj = requests.post(gql, headers=hdr,
+                               json={"query": staged_q,
+                                     "variables":{"input":staged_inputs}},
+                               verify=CA_BUNDLE).json()
+            print("[dbg] stagedUploadsCreate raw:")
+            pprint(sj)
+            ue = sj.get("data",{}).get("stagedUploadsCreate",{}).get("userErrors")
+            if ue:
+                raise Exception(f"stagedUploadsCreate userErrors: {ue}")
+            targets = sj["data"]["stagedUploadsCreate"]["stagedTargets"]
+
+            # ───────────────────── 4. POST each file
+            for f, tgt in zip(uploads, targets):
+                print(f"[dbg] Uploading {f.filename} to {tgt['url'][:60]}…")
+                params = {p["name"]: p["value"] for p in tgt["parameters"]}
+                resp = requests.post(
+                    tgt["url"],
+                    data=params,
+                    files={"file": (f.filename, f, f.content_type)}
+                )
+                print(f"[dbg] GCS upload status {resp.status_code}")
+                if resp.status_code >= 400:
+                    print(resp.text[:500])
+                    resp.raise_for_status()
+
+                # ───────────────── 5. fileCreate
+                fc_q = """
+                mutation($files:[FileCreateInput!]!){
+                  fileCreate(files:$files){
+                    files{id url}
+                    userErrors{field message}
                   }
-                }
-                """
-                fc_resp = requests.post(
-                    gql, headers=hdrs,
-                    json={"query": file_create, "variables": {
-                        "files": [{
-                          "originalSource": tgt["resourceUrl"],
-                          "contentType":    "FILE"
-                        }]
-                    }},
-                    verify=CA_BUNDLE
-                ).json()
+                }"""
+                fc_vars = {"files":[{
+                    "originalSource": tgt["resourceUrl"],
+                    "contentType": "FILE"
+                }]}
+                fc = requests.post(gql, headers=hdr,
+                                   json={"query":fc_q,"variables":fc_vars},
+                                   verify=CA_BUNDLE).json()
+                print("[dbg] fileCreate response:")
+                pprint(fc)
+                ue2 = fc["data"]["fileCreate"]["userErrors"]
+                if ue2:
+                    raise Exception(f"fileCreate userErrors: {ue2}")
+                file_urls.append(fc["data"]["fileCreate"]["files"][0]["url"])
 
-                fc_data = fc_resp.get("data", {}).get("fileCreate")
-                if not fc_data:
-                    raise Exception(f"fileCreate missing data: {fc_resp}")
-                if fc_data.get("userErrors"):
-                    raise Exception(f"fileCreate userErrors: {fc_data['userErrors']}")
-
-                file_id = fc_data["files"][0]["id"]
-
-                # 5b. Query node for publicUrl
-                node_q = """
-                query getFileUrl($id: ID!) {
-                  node(id: $id) {
-                    ... on File { publicUrl }
-                  }
-                }
-                """
-                node_resp = requests.post(
-                    gql, headers=hdrs,
-                    json={"query": node_q, "variables": {"id": file_id}},
-                    verify=CA_BUNDLE
-                ).json()
-
-                if "errors" in node_resp:
-                    raise Exception(f"node() transport errors: {node_resp['errors']}")
-                pu = node_resp.get("data", {}).get("node", {}).get("publicUrl")
-                if not pu:
-                    raise Exception(f"node() missing publicUrl: {node_resp}")
-                file_urls.append(pu)
-
-        # 6. Send to Zapier
-        zap_payload = {
-            "product_list":  data.get("product_list", []),
+        # ────────────────────────── 6. Zapier call
+        payload = {
+            "product_list" : data.get("product_list", []),
             "customer_info": data.get("customer_info", []),
-            "created_at":    datetime.utcnow().isoformat(),
-            "file_urls":     file_urls
+            "created_at"   : datetime.utcnow().isoformat(),
+            "file_urls"    : file_urls
         }
-        zap = requests.post(
-            ZAPIER_WEBHOOK,
-            headers={"Content-Type": "application/json"},
-            json=zap_payload,
-            verify=CA_BUNDLE
-        )
-        zap.raise_for_status()
+        print("[dbg] Final payload to Zapier (truncated):")
+        pprint({**payload, "product_list":"…", "customer_info":"…"})
+
+        zr = requests.post(ZAPIER_WEBHOOK, json=payload,
+                           headers={"Content-Type":"application/json"},
+                           verify=CA_BUNDLE)
+        print(f"[dbg] Zapier HTTP {zr.status_code}")
+        if zr.status_code >= 400:
+            print(zr.text[:500])
+            zr.raise_for_status()
+
+        print("=== /submit-quote done OK ===")
         return jsonify({"success": True}), 200
 
-    except Exception as e:
-        print(f"❌ submit_quote error: {e}", flush=True)
+    except Exception as exc:
+        print("❌ submit_quote error:", exc)
         traceback.print_exc()
-        return jsonify({"error": "Internal server error"}), 500
+        return jsonify({"error":"Internal server error"}), 500
+
 
 
 
