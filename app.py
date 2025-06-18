@@ -50,6 +50,19 @@ def send_alert_email(subject, body):
     except Exception as e:
         print(f"❌ Failed to send alert email: {e}", flush=True)
 
+
+def log_captcha_v2(result: dict) -> None:
+    """
+    For reCAPTCHA v2 responses.
+    Writes one concise line to Render logs, e.g.
+    [captcha] 2025-06-18 22:07:49  ✅ PASS  host=discount.gtsimulators.com
+    """
+    stamp   = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    status  = "✅ PASS" if result.get("success") else "❌ FAIL"
+    host    = result.get("hostname", "-")
+    print(f"[captcha] {stamp}  {status}  host={host}", flush=True)
+
+
 def get_discount_from_tags(product_id):
     headers = {"X-Shopify-Access-Token": ACCESS_TOKEN}
     url     = f"https://{SHOP_NAME}/admin/api/{API_VERSION}/products/{product_id}.json"
@@ -133,14 +146,20 @@ def submit_quote():
         token = data.get("recaptcha_token")
         if not token:
             return jsonify({"error": "missing recaptcha_token"}), 400
+
         rc = requests.post(
             "https://www.google.com/recaptcha/api/siteverify",
             data={"secret": RECAPTCHA_SECRET, "response": token},
             verify=CA_BUNDLE
         ).json()
-        print("[dbg] recaptcha:", rc)
+
+        log_captcha_v2(rc)               # ← ADD THIS LINE
+
         if not rc.get("success"):
+            # (optional) e-mail yourself on failure
+            send_alert_email("⚠️ Bad reCAPTCHA", json.dumps(rc, indent=2))
             return jsonify({"error": "recaptcha failed"}), 400
+
 
         file_urls = []
         if uploaded:
