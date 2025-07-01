@@ -334,6 +334,7 @@ def create_draft_from_method():
     order_discount_total  = 0.0
     tax_exempt            = False    # final flag applied to draft
     any_st_seen           = False    # track if ANY ST (ignored or not) appeared
+    any_variant_matched   = False    # track if any SKU matched a Shopify variant
 
     ignored_st = {"STCA", "STIN", "STNY", "STPA", "STTX", "STWA"}
 
@@ -388,15 +389,19 @@ def create_draft_from_method():
 
         # Unrecognized SKU → custom item
         if not info:
-            line_items.append(
-                {
-                    "title":    sku or "Custom Item",
-                    "price":    f"{disc:.2f}",
-                    "quantity": qty,
-                    "custom":   True,
-                }
-            )
+            custom_item = {
+                "title":    sku or "Custom Item",
+                "price":    f"{disc:.2f}",
+                "quantity": qty,
+                "custom":   True,
+            }
+            if not any_variant_matched:
+                custom_item["requires_shipping"] = True
+            line_items.append(custom_item)
             continue
+
+        # If we got here, the variant exists
+        any_variant_matched = True
 
         base_price       = info["price"]
         discount_amount  = round(base_price - disc, 2)
@@ -460,6 +465,7 @@ def create_draft_from_method():
 
     send_alert_email("⚠️ Method Draft Failed", f"{resp.status_code} {resp.text}")
     return jsonify({"error": "Failed", "details": resp.text}), 500
+
 
 @app.route("/ping", methods=["GET"])
 def ping():
