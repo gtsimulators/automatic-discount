@@ -262,7 +262,10 @@ def submit_quote():
 
 @app.route("/create-draft", methods=["POST"])
 def create_draft_order():
-    items = request.get_json().get("items", [])
+    data  = request.get_json() or {}                       # NEW
+    items = data.get("items", [])                          # CHANGED (from request.get_json()...)
+    attrs = data.get("attributes", {}) or {}               # NEW
+
     line_items = []
     for i in items:
         pid  = i["product_id"]
@@ -286,13 +289,21 @@ def create_draft_order():
             }
         )
 
+    # NEW: convert to REST note_attributes
+    note_attributes = [
+        {"name": str(k), "value": "" if v is None else str(v)}
+        for k, v in attrs.items() if str(v) != ""
+    ] if attrs else []
+
     payload = {
         "draft_order": {
             "line_items": line_items,
             "use_customer_default_address": True,
             "note": "",
+            **({"note_attributes": note_attributes} if note_attributes else {})  # NEW
         }
     }
+
     headers = {
         "Content-Type": "application/json",
         "X-Shopify-Access-Token": ACCESS_TOKEN,
@@ -308,8 +319,14 @@ def create_draft_order():
         invoice_url = resp.json().get("draft_order", {}).get("invoice_url")
         return jsonify({"checkout_url": invoice_url}), 200
 
-    send_alert_email("⚠️ Draft Order Failed", f"{resp.status_code} {resp.text}")
+    send_alert_email("⚠️ Website Draft Order Failed", f"{resp.status_code} {resp.text}")
     return jsonify({"error": "Failed", "details": resp.text}), 500
+
+
+
+
+# ───────────────────────────────────────────────────────────────────────
+
 
 @app.route("/create-draft-from-method", methods=["POST"])
 def create_draft_from_method():
