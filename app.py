@@ -417,11 +417,29 @@ def create_draft_from_method():
             line_items.append(custom_item)
             continue
 
-        # If we got here, the variant exists
-        any_variant_matched = True
 
-        base_price       = info["price"]
-        discount_amount  = round(base_price - disc, 2)
+
+        # If we got here, the variant exists — but switch to CUSTOM if we must charge above base or base is $0
+        shop_price   = float(info["price"])
+        method_price = float(disc)
+
+        if shop_price <= 0 or method_price > shop_price:
+            # Use a custom item at the Method (estimate) price
+            custom_item = {
+                "title":    sku or "Custom Item",
+                "price":    f"{method_price:.2f}",
+                "quantity": qty,
+                "custom":   True,
+            }
+            if not any_variant_matched:
+                custom_item["requires_shipping"] = True
+            line_items.append(custom_item)
+            continue
+
+        # proceed with variant (equal or lower than base → discount if needed)
+        any_variant_matched = True
+        base_price      = shop_price
+        discount_amount = round(base_price - method_price, 2)
         if discount_amount < 0:
             discount_amount = 0.0
 
@@ -430,14 +448,18 @@ def create_draft_from_method():
                 "variant_id": info["id"],
                 "quantity":   qty,
                 "price":      f"{base_price:.2f}",
-                "applied_discount": {
-                    "description": "GT DISCOUNT",
-                    "value_type":  "fixed_amount",
-                    "value":       f"{discount_amount:.2f}",
-                    "amount":      f"{discount_amount:.2f}",
-                },
+                **( {
+                    "applied_discount": {
+                        "description": "GT DISCOUNT",
+                        "value_type":  "fixed_amount",
+                        "value":       f"{discount_amount:.2f}",
+                        "amount":      f"{discount_amount:.2f}",
+                    }
+                } if discount_amount > 0 else {} ),
             }
         )
+
+
 
     # Apply tax_info fallback only if NO ST of any kind present
     if (not any_st_seen) and (quote_tax is not None):
