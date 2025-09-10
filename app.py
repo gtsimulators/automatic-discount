@@ -91,6 +91,10 @@ def fetch_variant_info(sku: str):
             id
             sku
             price
+            title
+            product {
+              title
+            }
           }
         }
       }
@@ -114,8 +118,12 @@ def fetch_variant_info(sku: str):
         return None
     gid = node["id"]  # e.g. "gid://shopify/ProductVariant/1234567890"
     vid = int(gid.rsplit("/", 1)[-1])
-    return {"id": vid, "price": float(node["price"])}
-
+    return {
+        "id": vid,
+        "price": float(node["price"]),
+        "variant_title": node.get("title"),
+        "product_title": node.get("product", {}).get("title"),
+    }
 
 
 
@@ -424,9 +432,15 @@ def create_draft_from_method():
         method_price = float(disc)
 
         if shop_price <= 0 or method_price > shop_price:
-            # Use a custom item at the Method (estimate) price
+            # Prefer Shopify product/variant title if available
+            method_title = (
+                info.get("product_title")
+                or info.get("variant_title")
+                or sku
+                or "Custom Item"
+            )
             custom_item = {
-                "title":    sku or "Custom Item",
+                "title":    f"{method_title} - {sku}",
                 "price":    f"{method_price:.2f}",
                 "quantity": qty,
                 "custom":   True,
