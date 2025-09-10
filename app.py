@@ -440,7 +440,7 @@ def create_draft_from_method():
                 or "Custom Item"
             )
             custom_item = {
-                "title":    f"{method_title} - {sku}",
+                "title":    f"{method_title} - Item # {sku}",
                 "price":    f"{method_price:.2f}",
                 "quantity": qty,
                 "custom":   True,
