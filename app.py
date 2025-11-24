@@ -36,6 +36,7 @@ SENDER_EMAIL   = "nandobentzen@gmail.com"
 ALERT_PASSWORD = os.getenv("PASS")
 ZAPIER_WEBHOOK = os.getenv("ZAPIER_WEBHOOK")
 LOVABLE_WEBHOOK = os.getenv("LOVABLE_WEBHOOK")
+QUOTE_WEBHOOK_API_KEY = os.getenv("QUOTE_WEBHOOK_API_KEY")
 
 
 def send_alert_email(subject, body):
@@ -251,11 +252,20 @@ def submit_quote():
 
         if not LOVABLE_WEBHOOK:
             msg = "Env LOVABLE_WEBHOOK not set"
-            print("[dbg] lovable missing:", msg)
+            print("[dbg] lovable missing:", msg, flush=True)
             send_alert_email("⚠️ LOVABLE_WEBHOOK missing", msg)
             return jsonify({"error": "Server not configured"}), 500
 
-        headers_json = {"Content-Type": "application/json"}
+        if not QUOTE_WEBHOOK_API_KEY:
+            msg = "Env QUOTE_WEBHOOK_API_KEY not set"
+            print("[dbg] lovable api key missing:", msg, flush=True)
+            send_alert_email("⚠️ QUOTE_WEBHOOK_API_KEY missing", msg)
+            return jsonify({"error": "Server not configured"}), 500
+
+        headers_json = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {QUOTE_WEBHOOK_API_KEY}",
+        }
 
         try:
             lr = requests.post(
@@ -264,14 +274,25 @@ def submit_quote():
                 headers=headers_json,
                 verify=CA_BUNDLE,
             )
-            print("[dbg] lovable status:", lr.status_code)
-            lr.raise_for_status()  # Lovable failure = request failure
+            print("[dbg] lovable status:", lr.status_code, flush=True)
+            print("[dbg] lovable body:", lr.text[:500], flush=True)
+
+            if not lr.ok:
+                msg = f"Lovable responded {lr.status_code}: {lr.text[:1000]}"
+                print("[dbg] lovable non-2xx:", msg, flush=True)
+                send_alert_email("⚠️ Lovable webhook non-2xx", msg)
+                return jsonify({
+                    "error": "Lovable webhook failed",
+                    "status": lr.status_code,
+                    "body": lr.text[:200],
+                }), 502
+
         except Exception as e:
-            print("[dbg] lovable send failed:", e)
-            send_alert_email("⚠️ Lovable webhook failed", f"{e}")
+            print("[dbg] lovable send failed (exception):", e, flush=True)
+            send_alert_email("⚠️ Lovable webhook exception", f"{e}")
             return jsonify({"error": "Lovable webhook failed"}), 502
 
-        print("[dbg] done OK; urls:", file_urls)
+        print("[dbg] done OK; urls:", file_urls, flush=True)
         return jsonify({"success": True}), 200
 
 
