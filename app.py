@@ -34,6 +34,7 @@ API_VERSION    = "2025-01"
 ALERT_EMAIL    = "fp@gtsimulators.com"
 SENDER_EMAIL   = "nandobentzen@gmail.com"
 ALERT_PASSWORD = os.getenv("PASS")
+ZAPIER_WEBHOOK = os.getenv("ZAPIER_WEBHOOK")
 LOVABLE_WEBHOOK = os.getenv("LOVABLE_WEBHOOK")
 
 
@@ -240,21 +241,39 @@ def submit_quote():
                 # Use staged resourceUrl as the public link
                 file_urls.append(tgt["resourceUrl"])
 
-        # ---------- 6. Zapier ----------
+        # ---------- 6. Lovable Webhook (main & only) ----------
         zap_payload = {
             "product_list" : data.get("product_list", []),
             "customer_info": data.get("customer_info", []),
             "created_at"   : datetime.utcnow().isoformat(),
-            "file_urls"    : file_urls
+            "file_urls"    : file_urls,
         }
-        zr = requests.post(LOVABLE_WEBHOOK, json=zap_payload,
-                           headers={"Content-Type":"application/json"},
-                           verify=CA_BUNDLE)
-        print("[dbg] zapier status:", zr.status_code)
-        zr.raise_for_status()
+
+        if not LOVABLE_WEBHOOK:
+            msg = "Env LOVABLE_WEBHOOK not set"
+            print("[dbg] lovable missing:", msg)
+            send_alert_email("⚠️ LOVABLE_WEBHOOK missing", msg)
+            return jsonify({"error": "Server not configured"}), 500
+
+        headers_json = {"Content-Type": "application/json"}
+
+        try:
+            lr = requests.post(
+                LOVABLE_WEBHOOK,
+                json=zap_payload,
+                headers=headers_json,
+                verify=CA_BUNDLE,
+            )
+            print("[dbg] lovable status:", lr.status_code)
+            lr.raise_for_status()  # Lovable failure = request failure
+        except Exception as e:
+            print("[dbg] lovable send failed:", e)
+            send_alert_email("⚠️ Lovable webhook failed", f"{e}")
+            return jsonify({"error": "Lovable webhook failed"}), 502
 
         print("[dbg] done OK; urls:", file_urls)
-        return jsonify({"success":True}), 200
+        return jsonify({"success": True}), 200
+
 
     except Exception as exc:
         print("❌ fatal:", exc)
