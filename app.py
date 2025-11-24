@@ -34,7 +34,7 @@ API_VERSION    = "2025-01"
 ALERT_EMAIL    = "fp@gtsimulators.com"
 SENDER_EMAIL   = "nandobentzen@gmail.com"
 ALERT_PASSWORD = os.getenv("PASS")
-ZAPIER_WEBHOOK = os.getenv("ZAPIER_WEBHOOK")
+LOVABLE_WEBHOOK = os.getenv("LOVABLE_WEBHOOK")
 
 
 def send_alert_email(subject, body):
@@ -247,7 +247,7 @@ def submit_quote():
             "created_at"   : datetime.utcnow().isoformat(),
             "file_urls"    : file_urls
         }
-        zr = requests.post(ZAPIER_WEBHOOK, json=zap_payload,
+        zr = requests.post(LOVABLE_WEBHOOK, json=zap_payload,
                            headers={"Content-Type":"application/json"},
                            verify=CA_BUNDLE)
         print("[dbg] zapier status:", zr.status_code)
